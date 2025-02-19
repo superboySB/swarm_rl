@@ -28,7 +28,7 @@ class Controller:
         self.thrust_old = None
         self.w_last = None
 
-    def get_control(self, state: torch.Tensor, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def get_control(self, state: torch.Tensor, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         p_odom = state[:, :3]
         q_odom = state[:, 3:7]
         v_odom = state[:, 7:10]
@@ -64,7 +64,7 @@ class Controller:
         self.w_last = w_desired
 
         thrust_desired, torque_desired = bodyrate_control(q_odom, w_odom, force_desired, w_desired, self.inertia, self.kPw)
-        return thrust_desired, torque_desired
+        return total_des_acc, thrust_desired, q_desired, w_desired, torque_desired
 
     def minimum_singularity_flat_with_drag(
         self,

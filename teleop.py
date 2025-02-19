@@ -30,10 +30,11 @@ from loguru import logger
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+import rclpy
 import sys
 import torch
 
-import env, camera_env, swarm_env
+import quadcopter_env, camera_env, swarm_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
 
@@ -188,7 +189,10 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(sys.stdout, level="INFO")
 
+    rclpy.init()
     # Run the main function
     main()
+    rclpy.shutdown()
+
     # Close sim app
     simulation_app.close()
