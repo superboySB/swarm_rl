@@ -30,10 +30,10 @@ CRAZYFLIE_CFG = ArticulationCfg(
             ".*": 0.0,
         },
         joint_vel={
-            "m1_joint": 52.0,
-            "m2_joint": -52.0,
-            "m3_joint": 52.0,
-            "m4_joint": -52.0,
+            "m1_joint": 200.0,
+            "m2_joint": -200.0,
+            "m3_joint": 200.0,
+            "m4_joint": -200.0,
         },
     ),
     actuators={
@@ -66,21 +66,21 @@ DJI_FPV_CFG = ArticulationCfg(
         copy_from_source=False,
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.1),
+        pos=(0.0, 0.0, 1.0),
         joint_pos={
             ".*": 0.0,
         },
         joint_vel={
-            "m1_joint": 52.0,
-            "m2_joint": 52.0,
-            "m3_joint": -52.0,
-            "m4_joint": -52.0,
+            "m1_joint": 200.0,
+            "m2_joint": 200.0,
+            "m3_joint": -200.0,
+            "m4_joint": -200.0,
         },
     ),
     actuators={
         "dummy": ImplicitActuatorCfg(
             joint_names_expr=[".*"],
-            stiffness=0.0,
+            stiffness=100000000.0,
             damping=0.0,
         ),
     },

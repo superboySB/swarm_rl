@@ -1,22 +1,32 @@
 #usda 1.0
 (
     customLayerData = {
+        dictionary audioSettings = {
+            double dopplerLimit = 2
+            double dopplerScale = 1
+            string enableDistanceDelay = "off"
+            string enableDoppler = "off"
+            string enableInterauralDelay = "off"
+            double nonSpatialTimeScale = 1
+            double spatialTimeScale = 1
+            double speedOfSound = 340
+        }
         dictionary cameraSettings = {
             dictionary Front = {
-                double3 position = (5, 0, 0)
-                double radius = 5
+                double3 position = (0, 0, 50000.02845657058)
+                double radius = 500
             }
             dictionary Perspective = {
-                double3 position = (0.14418315844533552, 0.14418315844533802, 0.14418327434508912)
-                double3 target = (-3.978038332075329e-8, -3.9780380683973604e-8, 7.956076814030766e-8)
+                double3 position = (0.6376492330876223, 0.6376492330876397, 0.6376492330876424)
+                double3 target = (-5.073198416916114e-9, -5.073180986414627e-9, 1.0146380513553765e-8)
             }
             dictionary Right = {
-                double3 position = (0, -5, 0)
-                double radius = 5
+                double3 position = (-50000.05465762808, 0, -1.1102242382683e-11)
+                double radius = 500
             }
             dictionary Top = {
-                double3 position = (0, 0, 5)
-                double radius = 5
+                double3 position = (-4.32978359510826e-12, 50000.038269041135, 1.1102238743685685e-11)
+                double radius = 500
             }
             string boundCamera = "/OmniverseKit_Persp"
         }
@@ -64,7 +74,10 @@
         }
     }
     defaultPrim = "crazyflie"
+    endTimeCode = 0
     metersPerUnit = 1
+    startTimeCode = -1
+    timeCodesPerSecond = 60
     upAxis = "Z"
 )
 
@@ -206,10 +219,11 @@ def Xform "crazyflie" (
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
 
             def Cube "geometry" (
-                prepend apiSchemas = ["PhysicsCollisionAPI"]
+                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
             )
             {
                 float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                rel material:binding = </crazyflie/Looks/MaterialPhysics_0>
                 double size = 1
                 float3 xformOp:scale = (0.1, 0.1, 0.03)
                 uniform token[] xformOpOrder = ["xformOp:scale"]
@@ -302,8 +316,8 @@ def Xform "crazyflie" (
     )
     {
         point3f physics:centerOfMass = (0, 0, 0)
-        float3 physics:diagonalInertia = (1e-15, 1e-15, 1e-15)
-        float physics:mass = 1e-15
+        float3 physics:diagonalInertia = (2e-9, 1.67e-7, 1.68e-7)
+        float physics:mass = 0.0008
         quatf physics:principalAxes = (1, 0, 0, 0)
         float3 xformOp:rotateXYZ = (0, 0, 0)
         double3 xformOp:translate = (0.031, -0.031, 0.021)
@@ -332,8 +346,8 @@ def Xform "crazyflie" (
     )
     {
         point3f physics:centerOfMass = (0, 0, 0)
-        float3 physics:diagonalInertia = (1e-15, 1e-15, 1e-15)
-        float physics:mass = 1e-15
+        float3 physics:diagonalInertia = (2e-9, 1.67e-7, 1.68e-7)
+        float physics:mass = 0.0008
         quatf physics:principalAxes = (1, 0, 0, 0)
         float3 xformOp:rotateXYZ = (0, 0, 0)
         double3 xformOp:translate = (-0.031, -0.031, 0.021)
@@ -362,8 +376,8 @@ def Xform "crazyflie" (
     )
     {
         point3f physics:centerOfMass = (0, 0, 0)
-        float3 physics:diagonalInertia = (1e-15, 1e-15, 1e-15)
-        float physics:mass = 1e-15
+        float3 physics:diagonalInertia = (2e-9, 1.67e-7, 1.68e-7)
+        float physics:mass = 0.0008
         quatf physics:principalAxes = (1, 0, 0, 0)
         float3 xformOp:rotateXYZ = (0, 0, 0)
         double3 xformOp:translate = (-0.031, 0.031, 0.021)
@@ -392,8 +406,8 @@ def Xform "crazyflie" (
     )
     {
         point3f physics:centerOfMass = (0, 0, 0)
-        float3 physics:diagonalInertia = (1e-15, 1e-15, 1e-15)
-        float physics:mass = 1e-15
+        float3 physics:diagonalInertia = (2e-9, 1.67e-7, 1.68e-7)
+        float physics:mass = 0.0008
         quatf physics:principalAxes = (1, 0, 0, 0)
         float3 xformOp:rotateXYZ = (0, 0, 0)
         double3 xformOp:translate = (0.031, 0.031, 0.021)
@@ -416,5 +430,679 @@ def Xform "crazyflie" (
             uniform token[] xformOpOrder = ["xformOp:scale"]
         }
     }
+
+    def Scope "Looks"
+    {
+        def Material "Material_0"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_0/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_0/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_0/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0.009523815, 0.009523815, 0.009523815) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "Material_1"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_1/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_1/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_1/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0.1169535, 0.1169535, 0.1169535) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "Material_2"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_2/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_2/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_2/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0.3428556, 0.3428556, 0.3428556) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "Material_3"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_3/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_3/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_3/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0.009523815, 0.009523815, 0.009523815) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "Material_4"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_4/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_4/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_4/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0.1169535, 0.1169535, 0.1169535) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "Material_5"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_5/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_5/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_5/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0.8, 0.8, 0.8) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "MaterialPhysics_0" (
+            apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+        )
+        {
+            float physics:density = 1
+            float physics:dynamicFriction = 1
+            float physics:restitution = 1
+            float physics:staticFriction = 1
+            token physXMaterial:frictionCombineMode = "average"
+            token physXMaterial:restitutionCombineMode = "average"
+        }
+
+        def Material "Material_6"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_6/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_6/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_6/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0, 0, 0) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "Material_7"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_7/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_7/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_7/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0, 0, 0) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "Material_8"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_8/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_8/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_8/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0, 0, 0) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+
+        def Material "Material_9"
+        {
+            token outputs:mdl:displacement.connect = </crazyflie/Looks/Material_9/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </crazyflie/Looks/Material_9/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </crazyflie/Looks/Material_9/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0, 0, 0) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                        dictionary range = {
+                            float3 max = (100000, 100000, 100000)
+                            float3 min = (0, 0, 0)
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                float inputs:emissive_intensity = 1 (
+                    customData = {
+                        float default = 40
+                        dictionary range = {
+                            int max = 100000
+                            int min = 0
+                        }
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Intensity"
+                    doc = "Intensity of the emission"
+                    hidden = false
+                )
+                bool inputs:enable_emission = 1 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Enable Emission"
+                    doc = "Enables the emission of light from the material"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+    }
+}
+
+over "Render" (
+    hide_in_stage_window = true
+)
+{
+}
+
+def DistantLight "DistantLight" (
+    prepend apiSchemas = ["ShapingAPI"]
+)
+{
+    float angle = 1
+    custom float inputs:angle = 1
+    custom float inputs:intensity = 3000
+    custom float inputs:shaping:cone:angle = 180
+    custom float inputs:shaping:cone:softness = 0
+    custom float inputs:shaping:focus = 0
+    custom color3f inputs:shaping:focusTint = (0, 0, 0)
+    float intensity = 3000
+    float shaping:cone:angle = 180
+    float shaping:cone:softness
+    float shaping:focus
+    color3f shaping:focusTint
+    asset shaping:ies:file
+    quatd xformOp:orient = (0.6532814824381883, 0.2705980500730985, 0.27059805007309845, 0.6532814824381882)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 }
 

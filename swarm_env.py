@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import gymnasium as gym
+from loguru import logger
+import math
+import time
 import torch
 from collections.abc import Sequence
 
@@ -13,8 +16,9 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
-from quadcopter import CRAZYFLIE_CFG  # isort: skip
+from quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils import quat_to_ang_between_z_body_and_z_world
+from controller import Controller
 
 
 class QuadcopterEnvWindow(BaseEnvWindow):
@@ -40,14 +44,14 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 @configclass
 class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-5.0, -5.0, 1.3))
+    viewer = ViewerCfg(eye=(-5.0, -5.0, 2.5))
 
     # Env
-    episode_length_s = 13.0
+    episode_length_s = 60.0
     decimation = 2
-    num_drones = 4  # Number of drones per environment
+    num_drones = 9  # Number of drones per environment
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
-    action_spaces = {agent: 4 for agent in possible_agents}
+    action_spaces = {agent: 14 for agent in possible_agents}
     observation_spaces = {agent: 13 for agent in possible_agents}
     state_space = 0
     debug_vis = False
@@ -56,8 +60,8 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 100,
-        render_interval=decimation,
+        dt=1 / 200,
+        render_interval=decimation * 5,
         disable_contact_processing=True,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -82,62 +86,55 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=3, replicate_physics=True
-    )
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=6, replicate_physics=True)
 
     # Robot
-    drone_cfg: ArticulationCfg = CRAZYFLIE_CFG.copy()
-    thrust_to_weights = {agent: 1.9 for agent in possible_agents}
-    moment_scales = {agent: 0.01 for agent in possible_agents}
-    init_gap = 0.5
-
-    # Reward scales
-    lin_vel_reward_scale = -0.05
-    ang_vel_reward_scale = -0.01
+    drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
+    p_max = {agent: 500.0 for agent in possible_agents}
+    v_max = {agent: 5.0 for agent in possible_agents}
+    yaw_dot_max = {agent: math.pi / 2 for agent in possible_agents}
+    init_gap = 0.8
 
 
 class QuadcopterSwarmEnv(DirectMARLEnv):
     cfg: QuadcopterSwarmEnvCfg
 
-    def __init__(
-        self, cfg: QuadcopterSwarmEnvCfg, render_mode: str | None = None, **kwargs
-    ):
+    def __init__(self, cfg: QuadcopterSwarmEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         # Total thrust and moment applied to the base of the quadcopter
-        self._thrusts = {
-            agent: torch.zeros(self.num_envs, 1, 3, device=self.device)
-            for agent in self.cfg.possible_agents
-        }
-        self._moments = {
-            agent: torch.zeros(self.num_envs, 1, 3, device=self.device)
-            for agent in self.cfg.possible_agents
-        }
+        self._thrusts = {agent: torch.zeros(self.num_envs, 1, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self._moments = {agent: torch.zeros(self.num_envs, 1, 3, device=self.device) for agent in self.cfg.possible_agents}
 
         # Get specific body indices for each drone
-        self._body_ids = {
-            agent: self._robots[agent].find_bodies("body")[0]
-            for agent in self.cfg.possible_agents
-        }
-        self._robot_masses = {
-            agent: self._robots[agent].root_physx_view.get_masses()[0].sum()
-            for agent in self.cfg.possible_agents
-        }
-        self._gravity_magnitude = torch.tensor(
-            self.sim.cfg.gravity, device=self.device
-        ).norm()
-        self._robot_weights = {
-            agent: (self._robot_masses[agent] * self._gravity_magnitude).item()
+        self._body_ids = {agent: self._robots[agent].find_bodies("body")[0] for agent in self.cfg.possible_agents}
+
+        self._robot_masses = {agent: self._robots[agent].root_physx_view.get_masses()[0, 0] for agent in self.cfg.possible_agents}
+        self._robot_inertias = {agent: self._robots[agent].root_physx_view.get_inertias()[0, 0] for agent in self.cfg.possible_agents}
+        self._gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
+        self._gravity_magnitude = torch.tensor(self.sim.cfg.gravity, device=self.device).norm()
+
+        # Controller
+        self._controllers = {
+            agent: Controller(
+                self.step_dt,
+                self._gravity,
+                self._robot_masses[agent].to(self.device),
+                self._robot_inertias[agent].to(self.device),
+                self.num_envs,
+                self.device,
+            )
             for agent in self.cfg.possible_agents
         }
 
     def _setup_scene(self):
         self._robots = {}
+        points_per_side = math.ceil(math.sqrt(self.cfg.num_drones))
+        side_length = (points_per_side - 1) * self.cfg.init_gap
         for i, agent in enumerate(self.cfg.possible_agents):
-            row = i // (self.cfg.num_drones // 2)
-            col = i % (self.cfg.num_drones // 2)
-            init_pos = (self.cfg.init_gap * row, self.cfg.init_gap * col, 0.0)
+            row = i // points_per_side
+            col = i % points_per_side
+            init_pos = (col * self.cfg.init_gap - side_length / 2, row * self.cfg.init_gap - side_length / 2, 1.0)
 
             drone = Articulation(
                 self.cfg.drone_cfg.replace(
@@ -154,38 +151,41 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         # Clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
-        self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
+
+        # TODO: to be deleted
+        # self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
 
         # Add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
+        start = time.perf_counter()
         for agent in self.possible_agents:
-            action = actions[agent].clone().clamp(-1.0, 1.0)
-            self._thrusts[agent][:, 0, 2] = (
-                self.cfg.thrust_to_weights[agent]
-                * self._robot_weights[agent]
-                * (action[:, 0] + 1.0)
-                / 2.0
-            )
-            self._moments[agent][:, 0, :] = (
-                self.cfg.moment_scales[agent] * action[:, 1:]
-            )
+            _actions = actions[agent].clone().clamp(-1.0, 1.0)
+            _actions[:, :3] *= self.cfg.p_max[agent]
+            _actions[:, :3] += self._terrain.env_origins
+            _actions[:, 3:6] *= self.cfg.v_max[agent]
+            _actions[:, 12] *= math.pi
+            _actions[:, 13] *= self.cfg.yaw_dot_max[agent]
+
+            thrust, self._moments[agent] = self._controllers[agent].get_control(self._robots[agent].data.root_link_state_w, _actions)
+            self._thrusts[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), thrust.unsqueeze(1)), dim=1)
+        end = time.perf_counter()
+        logger.debug(f"get_controls takes {end - start:.6f}s")
 
     def _apply_action(self) -> None:
         for agent in self.possible_agents:
             self._robots[agent].set_external_force_and_torque(
-                self._thrusts[agent],
-                self._moments[agent],
-                body_ids=self._body_ids[agent],
+                self._thrusts[agent].unsqueeze(1), self._moments[agent].unsqueeze(1), body_ids=self._body_ids[agent]
             )
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
-        observations = {
-            agent: self._robots[agent].data.root_link_state_w
-            for agent in self.possible_agents
-        }
+        observations = {}
+        for agent in self.possible_agents:
+            odom = self._robots[agent].data.root_link_state_w.clone()
+            odom[:, :3] -= self._terrain.env_origins
+            observations[agent] = odom
         return observations
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
@@ -196,25 +196,15 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
             z_exceed_bounds = torch.logical_or(
-                self._robots[agent].data.root_link_pos_w[:, 2] < -0.1,
-                self._robots[agent].data.root_link_pos_w[:, 2] > 5.2,
+                self._robots[agent].data.root_link_pos_w[:, 2] < -0.1, self._robots[agent].data.root_link_pos_w[:, 2] > 10.0
             )
-            ang_between_z_body_and_z_world = torch.rad2deg(
-                quat_to_ang_between_z_body_and_z_world(
-                    self._robots[agent].data.root_link_quat_w
-                )
-            )
-            _died = torch.logical_or(
-                z_exceed_bounds,
-                ang_between_z_body_and_z_world > 60.0,
-            )
+            ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self._robots[agent].data.root_link_quat_w))
+            _died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
             died = torch.logical_or(died, _died)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        return {agent: died for agent in self.cfg.possible_agents}, {
-            agent: time_out for agent in self.cfg.possible_agents
-        }
+        return {agent: died for agent in self.cfg.possible_agents}, {agent: time_out for agent in self.cfg.possible_agents}
 
     def _reset_idx(self, env_ids: Sequence[int] | torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -226,9 +216,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         super()._reset_idx(env_ids)
         if len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
-            self.episode_length_buf = torch.randint_like(
-                self.episode_length_buf, high=int(self.max_episode_length)
-            )
+            self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
         # Sample new commands for each drone
         for agent in self.possible_agents:
@@ -237,22 +225,14 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             joint_vel = self._robots[agent].data.default_joint_vel[env_ids]
             default_root_state = self._robots[agent].data.default_root_state[env_ids]
             default_root_state[:, :3] += self._terrain.env_origins[env_ids]
-            self._robots[agent].write_root_link_pose_to_sim(
-                default_root_state[:, :7], env_ids
-            )
-            self._robots[agent].write_root_com_velocity_to_sim(
-                default_root_state[:, 7:], env_ids
-            )
-            self._robots[agent].write_joint_state_to_sim(
-                joint_pos, joint_vel, None, env_ids
-            )
+            self._robots[agent].write_root_pose_to_sim(default_root_state[:, :7], env_ids)
+            self._robots[agent].write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
+            self._robots[agent].write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
 
 gym.register(
     id="FAST-Quadcopter-Swarm-Direct-v0",
     entry_point=QuadcopterSwarmEnv,
     disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": QuadcopterSwarmEnvCfg,
-    },
+    kwargs={"env_cfg_entry_point": QuadcopterSwarmEnvCfg},
 )
