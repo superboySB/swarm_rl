@@ -97,6 +97,8 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     p_max = 500.0
     v_max = 5.0
+    a_max = 10.0
+    j_max = 60.0
     yaw_dot_max = math.pi / 2
 
     # Reward scales
@@ -125,9 +127,7 @@ class QuadcopterEnv(DirectRLEnv):
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
 
         # Controller
-        self.controller = Controller(
-            self.step_dt, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device), self.num_envs, self.device
-        )
+        self.controller = Controller(self.step_dt, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device))
 
         # ROS2
         self.node = Node("quadcopter_env", namespace="quadcopter_env")
@@ -165,6 +165,8 @@ class QuadcopterEnv(DirectRLEnv):
         self.actions[:, :3] *= self.cfg.p_max
         self.actions[:, :3] += self.terrain.env_origins
         self.actions[:, 3:6] *= self.cfg.v_max
+        self.actions[:, 6:9] *= self.cfg.a_max
+        self.actions[:, 9:12] *= self.cfg.j_max
         self.actions[:, 12] *= math.pi
         self.actions[:, 13] *= self.cfg.yaw_dot_max
 

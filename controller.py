@@ -2,33 +2,34 @@ from loguru import logger
 import torch
 import math
 
-from utils import quat_inv, quat_multiply, quat_rotate, quat_to_rot_mat
+from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_quat
 
 
 class Controller:
-    def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor, num_envs: int, device):
+    def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor):
         # Params
-        self.kPp = torch.tensor([2.0, 2.0, 2.0], device=device)
-        self.kPv = torch.tensor([3.0, 3.0, 3.0], device=device)
-        self.kPR = torch.tensor([15.0, 15.0, 3.0], device=device)
-        self.kPw = torch.tensor([0.05, 0.05, 0.01], device=device)
+        self.kPp = torch.tensor([2.0, 2.0, 2.0], dtype=torch.float32, device=gravity.device)
+        self.kPv = torch.tensor([3.0, 3.0, 3.0], dtype=torch.float32, device=gravity.device)
+        self.kPR = torch.tensor([15.0, 15.0, 3.0], dtype=torch.float32, device=gravity.device)
+        self.kPw = torch.tensor([0.05, 0.05, 0.01], dtype=torch.float32, device=gravity.device)
         self.K_min_norm_collec_acc = 3
         self.K_max_ang = 45
         self.K_max_bodyrates_feedback = 4
         self.K_max_angular_acc = 60
 
         self.step_dt = step_dt
-        self.gravity = gravity
-        self.mass = mass
-        self.inertia = inertia
-        self.num_envs = num_envs
-        self.device = device
+        self.gravity = gravity.to(dtype=torch.float32)
+        self.mass = mass.to(dtype=torch.float32)
+        self.inertia = inertia.to(dtype=torch.float32)
 
         self.w_old = None
         self.thrust_old = None
         self.w_last = None
 
     def get_control(self, state: torch.Tensor, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        state = state.to(dtype=torch.float32)
+        action = action.to(dtype=torch.float32)
+        
         p_odom = state[:, :3]
         q_odom = state[:, 3:7]
         v_odom = state[:, 7:10]
@@ -44,7 +45,7 @@ class Controller:
         pid_error_accelerations = compute_pid_error_acc(p_odom, v_odom, p_desired, v_desired, self.kPp, self.kPv)
         translational_acc = pid_error_accelerations + a_desired
         translational_acc = self.gravity + compute_limited_total_acc_from_thrust_force(
-            translational_acc - self.gravity, torch.tensor(1.0, device=translational_acc.device), self.K_min_norm_collec_acc, self.K_max_ang
+            translational_acc - self.gravity, torch.tensor(1.0, dtype=torch.float32, device=translational_acc.device), self.K_min_norm_collec_acc, self.K_max_ang
         )
 
         thrust_desired, q_desired, w_desired = self.minimum_singularity_flat_with_drag(
@@ -52,7 +53,7 @@ class Controller:
         )
         w_desired = quat_rotate(quat_inv(q_odom), quat_rotate(q_desired, w_desired))
 
-        thrustforce = quat_rotate(q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], device=thrust_desired.device))
+        thrustforce = quat_rotate(q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device))
         total_des_acc = compute_limited_total_acc_from_thrust_force(thrustforce, self.mass, self.K_min_norm_collec_acc, self.K_max_ang)
         force_desired = total_des_acc * self.mass
 
@@ -87,13 +88,13 @@ class Controller:
         # veps is a smnoothing constant, do not change it
         veps = 0.02
 
-        if self.w_old is None or self.thrust_old is None:
-            self.w_old = torch.zeros(self.num_envs, 3, device=self.device)
-            self.thrust_old = self.mass * (a_desired + self.gravity).norm(dim=1)
-
         success, thrust_desired, q_desired, w_desired = flatness_with_drag(
             v_desired, a_desired, j_desired, yaw_desired, yaw_dot_desired, self.mass, self.gravity, cp, dv, dh, veps
         )
+
+        if self.w_old is None or self.thrust_old is None:
+            self.w_old = torch.zeros_like(v_desired, dtype=torch.float32)
+            self.thrust_old = self.mass * (a_desired + self.gravity).norm(dim=1)
 
         thrust_desired = torch.where(success, thrust_desired, self.thrust_old)
         q_desired = torch.where(success.unsqueeze(1), q_desired, q_odom)
@@ -114,7 +115,7 @@ def compute_pid_error_acc(
     p_odom: torch.Tensor, v_odom: torch.Tensor, p_desired: torch.Tensor, v_desired: torch.Tensor, kPp: torch.Tensor, kPv: torch.Tensor
 ) -> torch.Tensor:
 
-    pos_error = torch.where(torch.isnan(p_desired), torch.zeros_like(p_desired), torch.clamp(p_desired - p_odom, -1.0, 1.0))
+    pos_error = torch.where(torch.isnan(p_desired), torch.zeros_like(p_desired, dtype=torch.float32), torch.clamp(p_desired - p_odom, -1.0, 1.0))
     vel_error = torch.clamp((v_desired + kPp * pos_error) - v_odom, -1.0, 1.0)
     acc_error = kPv * vel_error
 
@@ -129,7 +130,7 @@ def compute_limited_total_acc_from_thrust_force(
     total_acc = thrustforce / mass
 
     # Limit magnitude
-    norms = total_acc.norm(p=2, dim=1, keepdim=True) + 1e-8
+    norms = total_acc.norm(p=2, dim=1, keepdim=True) + 1e-10
     total_acc = torch.where(norms < K_min_norm_collec_acc, total_acc / norms * K_min_norm_collec_acc, total_acc)
 
     # Limit angle
@@ -138,10 +139,10 @@ def compute_limited_total_acc_from_thrust_force(
         # Not allow too small z-force when angle limit is enabled
         z_acc = torch.where(z_acc < K_min_norm_collec_acc, K_min_norm_collec_acc, z_acc)
 
-        z_B = total_acc / (total_acc.norm(p=2, dim=1, keepdim=True) + 1e-8)
-        unit_z = torch.tensor([0.0, 0.0, 1.0], device=total_acc.device).expand(z_B.shape[0], 3)
+        z_B = total_acc / (total_acc.norm(p=2, dim=1, keepdim=True) + 1e-10)
+        unit_z = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=total_acc.device).expand(z_B.shape[0], 3)
         rot_axis = torch.cross(unit_z, z_B, dim=1)
-        rot_axis = rot_axis / (rot_axis.norm(p=2, dim=1, keepdim=True) + 1e-8)
+        rot_axis = rot_axis / (rot_axis.norm(p=2, dim=1, keepdim=True) + 1e-10)
 
         rot_ang = torch.acos(z_B[:, 2].clamp(-1.0, 1.0))
         K_max_ang = math.radians(K_max_ang)
@@ -226,7 +227,7 @@ def flatness_with_drag(
     tilt2 = z0 / safe_tilt_den
     c_half_psi = torch.cos(0.5 * yaw_desired)
     s_half_psi = torch.sin(0.5 * yaw_desired)
-    quat = torch.zeros(v_desired.size(0), 4, dtype=v_desired.dtype, device=v_desired.device)
+    quat = torch.zeros(v_desired.size(0), 4, dtype=torch.float32, device=v_desired.device)
     quat[:, 0] = tilt0 * c_half_psi
     quat[:, 1] = tilt1 * c_half_psi + tilt2 * s_half_psi
     quat[:, 2] = tilt2 * c_half_psi - tilt1 * s_half_psi
@@ -236,7 +237,7 @@ def flatness_with_drag(
     omg_den = z2 + 1.0
     safe_omg_den = torch.where(torch.abs(omg_den) < almost_zero, torch.ones_like(omg_den), omg_den)
     omg_term = dz2 / safe_omg_den
-    omg = torch.zeros_like(v_desired)
+    omg = torch.zeros_like(v_desired, dtype=torch.float32)
     omg[:, 0] = dz0 * s_psi - dz1 * c_psi - (z0 * s_psi - z1 * c_psi) * omg_term
     omg[:, 1] = dz0 * c_psi + dz1 * s_psi - (z0 * c_psi + z1 * s_psi) * omg_term
     omg[:, 2] = (z1 * dz0 - z0 * dz1) / omg_den + yaw_dot_desired
@@ -251,7 +252,7 @@ def flatness_with_drag(
 @torch.jit.script
 def compute_feedback_control_bodyrates(q_odom: torch.Tensor, q_desired: torch.Tensor, kPR: torch.Tensor, K_max_bodyrates_feedback: float):
 
-    q_e = quat_multiply(quat_inv(q_odom), q_desired)
+    q_e = quat_mul(quat_inv(q_odom), q_desired)
     q_e_vector = q_e[:, 1:]
     bodyrates = 2.0 * kPR * q_e_vector
     bodyrates = torch.where(q_e[:, 0:1] >= 0, bodyrates, -bodyrates)
@@ -287,7 +288,7 @@ def bodyrate_control(
     kPw: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
 
-    R = quat_to_rot_mat(q_odom)
+    R = matrix_from_quat(q_odom)
     thrust_desired = (force_desired * R[:, :, 2]).sum(dim=1)
 
     I = inertia.view(3, 3)

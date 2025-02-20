@@ -161,9 +161,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
 
         # Controller
-        self.controller = Controller(
-            self.step_dt, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device), self.num_envs, self.device
-        )
+        self.controller = Controller(self.step_dt, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device))
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
