@@ -8,7 +8,7 @@ from isaaclab.app import AppLauncher
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Keyboard teleoperation for quadcopter environments.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
-parser.add_argument("--num_envs", type=int, default=4, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--sensitivity", type=float, default=0.5, help="Sensitivity factor.")
 # Append AppLauncher cli args
@@ -41,7 +41,7 @@ from isaaclab_tasks.utils import parse_env_cfg
 from utils import quat_to_yaw
 
 
-def delta_pose_to_action(delta_pose: np.ndarray) -> np.ndarray:
+def delta_pose_to_action(delta_pose):
     action = np.zeros(14)
 
     if delta_pose[4] > 0:
@@ -129,6 +129,7 @@ def main():
 
     p_desired, yaw_desired = None, None
     v_max, yaw_dot_max, dt = env.unwrapped.cfg.v_max, env.unwrapped.cfg.yaw_dot_max, env.unwrapped.step_dt
+
     # Simulate environment
     while simulation_app.is_running():
         # Run everything in inference mode

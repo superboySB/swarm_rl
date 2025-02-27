@@ -26,10 +26,10 @@ class Controller:
         self.thrust_old = None
         self.w_last = None
 
-    def get_control(self, state: torch.Tensor, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        state = state.to(dtype=torch.float32)
-        action = action.to(dtype=torch.float32)
-        
+    def get_control(self, state_: torch.Tensor, action_: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        state = state_.clone().to(dtype=torch.float32)
+        action = action_.clone().to(dtype=torch.float32)
+
         p_odom = state[:, :3]
         q_odom = state[:, 3:7]
         v_odom = state[:, 7:10]
@@ -45,7 +45,10 @@ class Controller:
         pid_error_accelerations = compute_pid_error_acc(p_odom, v_odom, p_desired, v_desired, self.kPp, self.kPv)
         translational_acc = pid_error_accelerations + a_desired
         translational_acc = self.gravity + compute_limited_total_acc_from_thrust_force(
-            translational_acc - self.gravity, torch.tensor(1.0, dtype=torch.float32, device=translational_acc.device), self.K_min_norm_collec_acc, self.K_max_ang
+            translational_acc - self.gravity,
+            torch.tensor(1.0, dtype=torch.float32, device=translational_acc.device),
+            self.K_min_norm_collec_acc,
+            self.K_max_ang,
         )
 
         thrust_desired, q_desired, w_desired = self.minimum_singularity_flat_with_drag(
@@ -53,7 +56,9 @@ class Controller:
         )
         w_desired = quat_rotate(quat_inv(q_odom), quat_rotate(q_desired, w_desired))
 
-        thrustforce = quat_rotate(q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device))
+        thrustforce = quat_rotate(
+            q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device)
+        )
         total_des_acc = compute_limited_total_acc_from_thrust_force(thrustforce, self.mass, self.K_min_norm_collec_acc, self.K_max_ang)
         force_desired = total_des_acc * self.mass
 
