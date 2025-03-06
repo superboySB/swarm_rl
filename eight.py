@@ -36,10 +36,9 @@ from isaaclab_tasks.utils import parse_env_cfg
 from minco import MinJerkOpt
 
 
-def generate_eight_trajectory(p_odom, v_odom, p_init):
+def generate_eight_trajectory(p_odom, v_odom, a_odom, p_init):
     num_pieces = 6
 
-    a_odom = torch.zeros_like(v_odom)
     head_pva = torch.stack([p_odom, v_odom, a_odom], dim=2)
     tail_pva = torch.stack([p_init, torch.zeros_like(p_init), torch.zeros_like(p_init)], dim=2)
 
@@ -56,7 +55,7 @@ def generate_eight_trajectory(p_odom, v_odom, p_init):
     start = time.perf_counter()
     MJO.generate(inner_pts, durations)
     end = time.perf_counter()
-    logger.debug(f"Trajectories generation takes {end - start:.6f}s")
+    logger.info(f"Trajectory generation takes {end - start:.6f}s")
 
     return MJO.get_traj()
 
@@ -69,7 +68,7 @@ def main():
     # Reset environment
     env.reset()
 
-    traj, traj_dur, traj_update_required, execution_time = None, None, None, None
+    traj, traj_dur, env_reset, replan_required, traj_update_required, execution_time = None, None, None, None, None, None
     p_init, p_odom, v_odom = None, None, None
 
     # Simulate environment
@@ -81,18 +80,22 @@ def main():
                 p_init = obs["policy"][:, :3].clone()
                 p_odom = obs["policy"][:, :3]
                 v_odom = obs["policy"][:, 7:10]
+                a_odom = torch.zeros_like(v_odom)
 
-                traj = generate_eight_trajectory(p_odom, v_odom, p_init)
+                traj = generate_eight_trajectory(p_odom, v_odom, a_odom, p_init)
                 traj_dur = traj.get_total_duration()
                 execution_time = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device)
                 traj_update_required = torch.tensor([False] * env.unwrapped.num_envs, device=env.unwrapped.device)
 
             if traj_update_required.any():
-                update_traj = generate_eight_trajectory(p_odom[traj_update_required], v_odom[traj_update_required], p_init[traj_update_required])
+                a_odom = torch.where(env_reset, torch.zeros_like(v_odom), traj.get_acc(execution_time))
+                update_traj = generate_eight_trajectory(
+                    p_odom[traj_update_required], v_odom[traj_update_required], a_odom[traj_update_required], p_init[traj_update_required]
+                )
                 traj[traj_update_required] = update_traj
                 traj_dur[traj_update_required] = update_traj.get_total_duration()
                 execution_time[traj_update_required] = 0.0
-                traj_update_required.fill_(False)
+                replan_required.fill_(False)
 
             actions = torch.cat(
                 (
@@ -110,7 +113,9 @@ def main():
             obs, _, reset_terminated, reset_time_outs, _ = env.step(actions)
             execution_time += env.unwrapped.step_dt
 
-            traj_update_required = reset_terminated | reset_time_outs | (execution_time > 0.8 * traj_dur)
+            env_reset = reset_terminated | reset_time_outs
+            replan_required = execution_time > 0.9 * traj_dur
+            traj_update_required = env_reset | replan_required
             p_odom[traj_update_required] = obs["policy"][traj_update_required, :3]
             v_odom[traj_update_required] = obs["policy"][traj_update_required, 7:10]
 

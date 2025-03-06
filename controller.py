@@ -62,7 +62,7 @@ class Controller:
         total_des_acc = compute_limited_total_acc_from_thrust_force(thrustforce, self.mass, self.K_min_norm_collec_acc, self.K_max_ang)
         force_desired = total_des_acc * self.mass
 
-        feedback_bodyrates = compute_feedback_control_bodyrates(q_odom, q_desired, self.kPR, self.K_max_bodyrates_feedback)
+        feedback_bodyrates = quat_rotate(q_odom, compute_feedback_control_bodyrates(q_odom, q_desired, self.kPR, self.K_max_bodyrates_feedback))
         if self.w_last is None:
             w_desired += feedback_bodyrates
         else:
@@ -70,7 +70,7 @@ class Controller:
         self.w_last = w_desired
 
         thrust_desired, torque_desired = bodyrate_control(q_odom, w_odom, force_desired, w_desired, self.inertia, self.kPw)
-        return total_des_acc, thrust_desired, q_desired, w_desired, torque_desired
+        return total_des_acc, thrust_desired, q_desired, w_desired, quat_rotate(quat_inv(q_odom), torque_desired)
 
     def minimum_singularity_flat_with_drag(
         self,

@@ -3,10 +3,10 @@ import torch
 
 
 class Trajectory:
-    def __init__(self, durs=None, coeff_mats_=None):
-        self.num_env, self.N = durs.shape
-        self.durations = durs
-        self.coeff_mats = coeff_mats_
+    def __init__(self, durations=None, coeff_mats=None):
+        self.num_env, self.N = durations.shape
+        self.durations = durations
+        self.coeff_mats = coeff_mats
 
     def __setitem__(self, index, traj_new):
         self.durations[index] = traj_new.durations
@@ -136,13 +136,13 @@ class BandedSystem:
 
 
 class MinJerkOpt:
-    def __init__(self, head_pva_, tail_pva_, num_pieces):
-        self.num_env = head_pva_.shape[0]
-        self.device = head_pva_.device
+    def __init__(self, head_pva, tail_pva, num_pieces):
+        self.num_env = head_pva.shape[0]
+        self.device = head_pva.device
 
         self.N = num_pieces
-        self.head_pva = head_pva_.clone().to(dtype=torch.float32)
-        self.tail_pva = tail_pva_.clone().to(dtype=torch.float32)
+        self.head_pva = head_pva.clone().to(dtype=torch.float32)
+        self.tail_pva = tail_pva.clone().to(dtype=torch.float32)
 
     def generate(self, inner_pts_, durations):
         inner_pts = inner_pts_.clone().to(dtype=torch.float32)
