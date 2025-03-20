@@ -1,9 +1,14 @@
 """Script to run a keyboard teleoperation with quacopter environments"""
 
 import argparse
+import os
+import sys
 
 from isaaclab.app import AppLauncher
 
+
+# TODO: improve import modality
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Keyboard teleoperation for quadcopter environments.")
@@ -31,10 +36,9 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import rclpy
-import sys
 import torch
 
-import envs.quadcopter_env as quadcopter_env, envs.camera_env as camera_env, envs.swarm_env as swarm_env
+from envs import quadcopter_env, camera_env, swarm_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate

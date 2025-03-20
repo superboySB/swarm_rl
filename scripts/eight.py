@@ -1,9 +1,14 @@
 """Script to run a eight trajectory generation and tracking with single quacopter environment"""
 
 import argparse
+import os
+import sys
 
 from isaaclab.app import AppLauncher
 
+
+# TODO: improve import modality
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Eight trajectory generation and tracking for single quadcopter environment.")
@@ -30,11 +35,10 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import rclpy
-import sys
 import time
 import torch
 
-import envs.quadcopter_env as quadcopter_env, envs.camera_env as camera_env, envs.swarm_env as swarm_env
+from envs import quadcopter_env, camera_env, swarm_env
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate
 from utils.minco import MinJerkOpt

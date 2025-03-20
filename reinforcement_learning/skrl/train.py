@@ -13,9 +13,14 @@ a more user-friendly way.
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
+
+
+# TODO: improve import modality
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with skrl.")
@@ -62,10 +67,11 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import gymnasium as gym
-import os
-import random
 from datetime import datetime
+import gymnasium as gym
+from loguru import logger
+import random
+import rclpy
 
 import skrl
 from packaging import version
@@ -88,7 +94,6 @@ from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
     DirectRLEnvCfg,
-    ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.assets import retrieve_file_path
@@ -98,6 +103,7 @@ from isaaclab.utils.io import dump_pickle, dump_yaml
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
+from envs import quadcopter_env, camera_env, swarm_env
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # config shortcuts
@@ -106,7 +112,7 @@ agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"sk
 
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
+def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Train with skrl agent."""
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
@@ -195,7 +201,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
 
 if __name__ == "__main__":
+    logger.remove()
+    # logger.add(sys.stdout, level="DEBUG")
+    logger.add(sys.stdout, level="INFO")
+
+    rclpy.init()
     # run the main function
     main()
+    rclpy.shutdown()
     # close sim app
     simulation_app.close()

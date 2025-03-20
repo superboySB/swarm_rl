@@ -15,7 +15,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg, ViewerCfg
 from isaaclab.envs.ui import BaseEnvWindow
-from isaaclab.markers import VisualizationMarkers
+from isaaclab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
@@ -65,7 +65,6 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     render_decimation = physics_freq // gui_render_freq
     observation_space = 13
     state_space = 0
-    debug_vis = False
 
     # MINCO trajectory
     num_pieces = 6
@@ -115,6 +114,11 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     ang_vel_reward_scale = -0.01
     distance_to_goal_reward_scale = 15.0
 
+    # Debug visualization
+    debug_vis = True
+    debug_vis_goal = True
+    debug_vis_action = True
+
 
 class QuadcopterEnv(DirectRLEnv):
     cfg: QuadcopterEnvCfg
@@ -162,6 +166,7 @@ class QuadcopterEnv(DirectRLEnv):
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
+        self.visualize_new_cmd = False
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
@@ -214,6 +219,8 @@ class QuadcopterEnv(DirectRLEnv):
         self.traj = MJO.get_traj()
         self.execution_time = torch.zeros(self.num_envs, device=self.device)
         self.has_prev_traj.fill_(True)
+
+        self.visualize_new_cmd = True
 
     def _apply_action(self):
         if self.control_counter % self.cfg.control_decimation == 0:
@@ -331,22 +338,70 @@ class QuadcopterEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
-        # Create markers if necessary for the first time
         if debug_vis:
-            if not hasattr(self, "goal_pos_visualizer"):
-                marker_cfg = CUBOID_MARKER_CFG.copy()
-                marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
-                marker_cfg.prim_path = "/Visuals/Command/goal_position"
-                self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
-            # Set their visibility to true
-            self.goal_pos_visualizer.set_visibility(True)
-        else:
-            if hasattr(self, "goal_pos_visualizer"):
-                self.goal_pos_visualizer.set_visibility(False)
+            if self.cfg.debug_vis_goal:
+                if not hasattr(self, "goal_pos_visualizer"):
+                    marker_cfg = CUBOID_MARKER_CFG.copy()
+                    marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
+                    marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
+                    marker_cfg.prim_path = "/Visuals/Command/goal"
+                    self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
+                self.goal_pos_visualizer.set_visibility(True)
+            else:
+                if hasattr(self, "goal_pos_visualizer"):
+                    self.goal_pos_visualizer.set_visibility(False)
+
+            if self.cfg.debug_vis_action:
+                if not hasattr(self, "waypoint_visualizer"):
+                    marker_cfg = VisualizationMarkersCfg(
+                        prim_path="/Visuals/Command/waypoints",
+                        markers={
+                            "sphere": sim_utils.SphereCfg(
+                                radius=0.05,
+                                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                            ),
+                        },
+                    )
+                    self.waypoint_visualizer = VisualizationMarkers(marker_cfg)
+                self.waypoint_visualizer.set_visibility(True)
+
+                if not hasattr(self, "tailpoint_visualizer"):
+                    marker_cfg = VisualizationMarkersCfg(
+                        prim_path="/Visuals/Command/tailpoint",
+                        markers={
+                            "sphere": sim_utils.SphereCfg(
+                                radius=0.1,
+                                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+                            ),
+                        },
+                    )
+                    self.tailpoint_visualizer = VisualizationMarkers(marker_cfg)
+                self.tailpoint_visualizer.set_visibility(True)
+            else:
+                if hasattr(self, "waypoint_visualizer"):
+                    self.waypoint_visualizer.set_visibility(False)
+                if hasattr(self, "tailpoint_visualizer"):
+                    self.tailpoint_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
-        # Update the markers
-        self.goal_pos_visualizer.visualize(self.desired_pos_w)
+        if hasattr(self, "goal_pos_visualizer"):
+            self.goal_pos_visualizer.visualize(translations=self.desired_pos_w)
+
+        if self.visualize_new_cmd && hasattr(self, "waypoint_visualizer") and hasattr(self, "tailpoint_visualizer"):
+            p_odom = self.robot.data.root_state_w[:, :3]
+            q_odom = self.robot.data.root_state_w[:, 3:7]
+
+            inner_pts_world = torch.zeros((self.num_envs, self.cfg.num_pieces - 1, 3), device=self.device)
+            for i in range(self.cfg.num_pieces - 1):
+                inner_pts_world[:, i] = quat_rotate(q_odom, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + p_odom
+
+            inner_pts_flat = inner_pts_world.reshape(-1, 3)
+            self.waypoint_visualizer.visualize(translations=inner_pts_flat)
+            
+            p_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
+            self.tailpoint_visualizer.visualize(translations=p_tail)
+
+            self.visualize_new_cmd = False
 
     def _publish_debug_signals(self):
 
@@ -458,9 +513,15 @@ class QuadcopterEnv(DirectRLEnv):
         return stamp
 
 
+from config import agents
+
+
 gym.register(
     id="FAST-Quadcopter-Direct-v0",
     entry_point=QuadcopterEnv,
     disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": QuadcopterEnvCfg},
+    kwargs={
+        "env_cfg_entry_point": QuadcopterEnvCfg,
+        "sb3_cfg_entry_point": f"{agents.__name__}:quadcopter_sb3_ppo_cfg.yaml",
+    },
 )

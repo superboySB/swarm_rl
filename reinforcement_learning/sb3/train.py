@@ -13,9 +13,14 @@ there will be significant overhead in GPU->CPU transfer.
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
+
+
+# TODO: improve import modality
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with Stable-Baselines3.")
@@ -43,11 +48,12 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import gymnasium as gym
-import numpy as np
-import os
-import random
 from datetime import datetime
+import gymnasium as gym
+from loguru import logger
+import numpy as np
+import random
+import rclpy
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -58,7 +64,6 @@ from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
     DirectRLEnvCfg,
-    ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
@@ -67,11 +72,12 @@ from isaaclab.utils.io import dump_pickle, dump_yaml
 from isaaclab_rl.sb3 import Sb3VecEnvWrapper, process_sb3_cfg
 
 import isaaclab_tasks  # noqa: F401
+from envs import quadcopter_env, camera_env, swarm_env
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 
 @hydra_task_config(args_cli.task, "sb3_cfg_entry_point")
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
+def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Train with stable-baselines agent."""
     # randomly sample a seed if seed = -1
     if args_cli.seed == -1:
@@ -158,7 +164,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
 
 if __name__ == "__main__":
+    logger.remove()
+    # logger.add(sys.stdout, level="DEBUG")
+    logger.add(sys.stdout, level="INFO")
+
+    rclpy.init()
     # run the main function
     main()
+    rclpy.shutdown()
     # close sim app
     simulation_app.close()

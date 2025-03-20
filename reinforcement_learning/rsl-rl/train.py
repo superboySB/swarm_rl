@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -15,6 +16,9 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 
+
+# TODO: improve import modality
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -44,10 +48,11 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import gymnasium as gym
-import os
-import torch
 from datetime import datetime
+import gymnasium as gym
+from loguru import logger
+import rclpy
+import torch
 
 from rsl_rl.runners import OnPolicyRunner
 
@@ -55,7 +60,6 @@ from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
     DirectRLEnvCfg,
-    ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
@@ -64,6 +68,7 @@ from isaaclab.utils.io import dump_pickle, dump_yaml
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
+from envs import quadcopter_env, camera_env, swarm_env
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
@@ -74,7 +79,7 @@ torch.backends.cudnn.benchmark = False
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
+def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
@@ -150,7 +155,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
 
 if __name__ == "__main__":
+    logger.remove()
+    # logger.add(sys.stdout, level="DEBUG")
+    logger.add(sys.stdout, level="INFO")
+
+    rclpy.init()
     # run the main function
     main()
+    rclpy.shutdown()
     # close sim app
     simulation_app.close()
