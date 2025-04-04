@@ -112,7 +112,10 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
     init_gap = 0.8
 
-
+    lin_vel_reward_scale = -0.05
+    ang_vel_reward_scale = -0.01
+    distance_to_goal_reward_scale = 15.0
+    
 class QuadcopterSwarmEnv(DirectMARLEnv):
     cfg: QuadcopterSwarmEnvCfg
 
@@ -131,6 +134,25 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.robot_masses = {agent: self.robots[agent].root_physx_view.get_masses()[0, 0] for agent in self.cfg.possible_agents}
         self.robot_inertias = {agent: self.robots[agent].root_physx_view.get_inertias()[0, 0] for agent in self.cfg.possible_agents}
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
+
+        # Initialize desired positions for each agent
+        self.desired_pos_w = {agent: torch.zeros((self.num_envs, 3), device=self.device) for agent in self.cfg.possible_agents}
+
+        # Initialize episode sums for each agent and each reward component
+        self.episode_sums = {}
+        for agent in self.cfg.possible_agents:
+            for key in ["lin_vel", "ang_vel", "distance_to_goal"]:
+                self.episode_sums[f"{agent}_{key}"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        # Initialize extras dictionary with proper structure
+        self.extras = {"log": {}}
+        # Initialize base metrics as tensors for all envs
+        for agent in self.cfg.possible_agents:
+            for key in ["lin_vel", "ang_vel", "distance_to_goal"]:
+                self.extras["log"][f"Rewards/{agent}/{key}"] = torch.zeros(self.num_envs, device=self.device)
+            self.extras["log"][f"Metrics/final_distance_to_goal/{agent}"] = torch.zeros(self.num_envs, device=self.device)
+        self.extras["log"]["Episode_Termination/died"] = torch.zeros(self.num_envs, device=self.device)
+        self.extras["log"]["Episode_Termination/time_out"] = torch.zeros(self.num_envs, device=self.device)
 
         # Traj
         self.waypoints, self.trajs = {}, {}
@@ -260,7 +282,37 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         return observations
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
-        rewards = {agent: 0 for agent in self.possible_agents}
+        rewards = {}
+        
+        for agent in self.possible_agents:
+            # Calculate raw components
+            components = {
+                "lin_vel": torch.sum(torch.square(self.robots[agent].data.root_lin_vel_b), dim=1),
+                "ang_vel": torch.sum(torch.square(self.robots[agent].data.root_ang_vel_b), dim=1),
+                "distance_to_goal": torch.linalg.norm(self.desired_pos_w[agent] - self.robots[agent].data.root_pos_w, dim=1)
+            }
+            
+            # Apply transformations and scaling
+            components["distance_to_goal"] = 1 - torch.tanh(components["distance_to_goal"] / 0.8)
+            
+            # Calculate final rewards with scaling factors
+            agent_rewards = {
+                "lin_vel": components["lin_vel"] * self.cfg.lin_vel_reward_scale * self.step_dt,
+                "ang_vel": components["ang_vel"] * self.cfg.ang_vel_reward_scale * self.step_dt,
+                "distance_to_goal": components["distance_to_goal"] * self.cfg.distance_to_goal_reward_scale * self.step_dt
+            }
+            
+            # Calculate total reward for this agent
+            agent_total_reward = torch.sum(torch.stack(list(agent_rewards.values())), dim=0)
+            
+            # Log individual reward components
+            for key, value in agent_rewards.items():
+                self.episode_sums[f"{agent}_{key}"] = self.episode_sums.get(f"{agent}_{key}", torch.zeros_like(value)) + value
+                # Update the extras dictionary with the current values
+                self.extras["log"][f"Rewards/{agent}/{key}"] = value
+            
+            rewards[agent] = agent_total_reward
+            
         return rewards
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
@@ -279,6 +331,25 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self.robots["drone_0"]._ALL_INDICES
 
+        # Logging episode rewards
+        for key in self.episode_sums.keys():
+            episodic_sum_avg = torch.mean(self.episode_sums[key][env_ids])
+            self.extras["log"]["Episode_Reward/" + key] = torch.full((self.num_envs,), episodic_sum_avg.item() / self.max_episode_length_s, device=self.device)
+            self.episode_sums[key][env_ids] = 0.0
+        
+        # Update termination states
+        terminated, time_out = self._get_dones()
+        self.extras["log"]["Episode_Termination/died"] = torch.full((self.num_envs,), torch.count_nonzero(terminated["drone_0"][env_ids]).item(), device=self.device)
+        self.extras["log"]["Episode_Termination/time_out"] = torch.full((self.num_envs,), torch.count_nonzero(time_out["drone_0"][env_ids]).item(), device=self.device)
+        
+        # Update final distance to goal for each agent
+        for agent in self.possible_agents:
+            final_distance_to_goal = torch.linalg.norm(
+                self.desired_pos_w[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], 
+                dim=1
+            ).mean()
+            self.extras["log"][f"Metrics/final_distance_to_goal/{agent}"] = torch.full((self.num_envs,), final_distance_to_goal.item(), device=self.device)
+        
         for agent in self.possible_agents:
             self.robots[agent].reset(env_ids)
 
@@ -289,6 +360,12 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         self.has_prev_traj[env_ids].fill_(False)
 
+        # Sample new commands for each agent
+        for agent in self.possible_agents:
+            self.desired_pos_w[agent][env_ids, :2] = torch.zeros_like(self.desired_pos_w[agent][env_ids, :2]).uniform_(-10.0, 10.0)
+            self.desired_pos_w[agent][env_ids, :2] += self.terrain.env_origins[env_ids, :2]
+            self.desired_pos_w[agent][env_ids, 2] = torch.zeros_like(self.desired_pos_w[agent][env_ids, 2]).uniform_(1.0, 2.0)
+        
         # Reset robot state
         for agent in self.possible_agents:
             joint_pos = self.robots[agent].data.default_joint_pos[env_ids]
@@ -299,10 +376,13 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             self.robots[agent].write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
             self.robots[agent].write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
+from config import agents
 
 gym.register(
     id="FAST-Quadcopter-Swarm-Direct-v0",
     entry_point=QuadcopterSwarmEnv,
     disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": QuadcopterSwarmEnvCfg},
+    kwargs={"env_cfg_entry_point": QuadcopterSwarmEnvCfg,
+            "sb3_cfg_entry_point": f"{agents.__name__}:quadcopter_swarm_sb3_ppo_cfg.yaml",
+        },
 )
