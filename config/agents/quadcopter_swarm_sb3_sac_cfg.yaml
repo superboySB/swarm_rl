@@ -1,0 +1,22 @@
+# Reference: https://github.com/DLR-RM/rl-baselines3-zoo/blob/master/hyperparams/ppo.yml
+# SAC配置参数
+seed: 42
+
+policy: 'MlpPolicy'
+n_timesteps: !!float 1e7
+batch_size: 1024  # 增大批量大小以提高稳定性
+# SAC不使用n_steps，移除
+gamma: 0.99
+learning_rate: !!float 2.5e-4  # 略微降低学习率以提高稳定性
+ent_coef: 'auto'  # 自动调整熵系数
+tau: 0.005  # 降低目标网络的更新速率，提高稳定性
+buffer_size: 2000000
+learning_starts: 100000  # 增加初始探索阶段
+train_freq: 8  # 训练频率
+gradient_steps: 8  # 每个更新的梯度步数
+# 移除vf_coef (PPO专用)
+device: "cuda:0"  # 使用第一个GPU
+policy_kwargs: "dict(log_std_init=-3, net_arch=dict(pi=[256, 256, 12], qf=[256, 256, 128]), activation_fn=nn.ReLU)"  # 更深的网络结构和适当的激活函数
+normalize_input: true  # 归一化观察
+normalize_value: true  # 归一化奖励
+clip_obs: 10.0  # 限制观察范围

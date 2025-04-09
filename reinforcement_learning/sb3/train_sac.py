@@ -23,7 +23,7 @@ parser.add_argument("--num_envs", type=int, default=4096, help="Number of enviro
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--save_interval", type=int, default=1e6, help="Interval between checkpoints (in steps).")
+parser.add_argument("--save_interval", type=int, default=2e6, help="Interval between checkpoints (in steps).")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in frames).")
 parser.add_argument("--pretrained_model", type=str, default=None, help="Path to the pre-trained model.")
@@ -53,7 +53,7 @@ import random
 import rclpy
 import torch
 
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import VecNormalize
@@ -104,10 +104,11 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
     env_cfg.seed = agent_cfg["seed"]
     if args_cli.max_iterations is not None:
-        agent_cfg["n_timesteps"] = args_cli.max_iterations * agent_cfg["n_steps"] * env_cfg.scene.num_envs
+        # SAC不使用n_steps参数，直接使用max_iterations和环境数量
+        agent_cfg["n_timesteps"] = args_cli.max_iterations * env_cfg.scene.num_envs
 
     run_info = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_root_path = os.path.abspath(os.path.join("outputs", "sb3", args_cli.task))
+    log_root_path = os.path.abspath(os.path.join("outputs", "sb3", args_cli.task,"sac"))
     log_dir = os.path.join(log_root_path, run_info)
     # Dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
@@ -148,9 +149,9 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
         )
 
     if args_cli.pretrained_model:
-        agent = PPO.load(args_cli.pretrained_model, env=env, device=agent_cfg["device"])
+        agent = SAC.load(args_cli.pretrained_model, env=env, device=agent_cfg["device"])
     else:
-        agent = PPO(policy_arch, env, verbose=2, **agent_cfg)
+        agent = SAC(policy_arch, env, verbose=2, **agent_cfg)
     print(agent_cfg)
     new_logger = configure(log_dir, ["stdout", "tensorboard"])
     agent.set_logger(new_logger)
