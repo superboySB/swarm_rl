@@ -2,8 +2,8 @@
 seed: 42
 
 policy: 'MlpPolicy'
-n_timesteps: !!float 4e7
-batch_size: 256
+n_timesteps: !!float 1e7
+batch_size: 512
 n_steps: 8
 gamma: 0.99
 learning_rate: !!float 2.5e-4
@@ -13,14 +13,14 @@ n_epochs: 4
 gae_lambda: 0.95
 max_grad_norm: 1.0
 vf_coef: 0.5
-device: "cuda:0"
+device: "cpu"
 policy_kwargs: "dict(
                     log_std_init=0,
                     ortho_init=False,
                     activation_fn=nn.ReLU,
-                    net_arch=dict(pi=[128,256,512, 256, 128], vf=[128,256,512, 256, 128]),
+                    net_arch=dict(pi=[512,512, 256], vf=[512,512, 256]),
                 )"
 
 # 归一化参数
-normalize_input: true    # 启用观察归一化
-normalize_value: true    # 启用奖励归一化
+# normalize_input: true    # 启用观察归一化
+# normalize_value: true    # 启用奖励归一化

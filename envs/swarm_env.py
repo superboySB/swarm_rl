@@ -71,7 +71,7 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 @configclass
 class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-5.0, -5.0, 4.0))
+    viewer = ViewerCfg(eye=(-10.0, -10.0, 8.0))
 
     # Env
     episode_length_s = 30.0
@@ -80,14 +80,11 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     mpc_freq = 10
     gui_render_freq = 50
     control_decimation = physics_freq // control_freq
+    num_drones = 5  # Number of drones per environment
     decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     render_decimation = physics_freq // gui_render_freq
-    
-    # Drone configuration
-    num_drones = 5  # Number of drones per environment
-    possible_agents = [f"drone_{i}" for i in range(5)]  # 直接使用数字5而不是num_drones
-    # elesheep：哥们不知道为啥???? 
-    observation_spaces = {agent: 13 + 4 * 4 for agent in possible_agents}  # 直接使用4而不是num_drones-1 
+    possible_agents = [f"drone_{i}" for i in range(num_drones)]
+    observation_spaces = {agent: 13 for agent in possible_agents}
     state_space = 0
 
     # Debug visualization 
@@ -150,7 +147,8 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     distance_to_goal_reward_scale = 5.0  # 增加靠近目标的奖励
     survival_reward_scale = 0.0    # 禁用生存奖励
     died_reward_scale = 0.0      # 减轻死亡惩罚
-    collision_reward_scale = -10.0  # 防撞惩罚系数
+    collision_reward_scale = -1.0  # 添加碰撞惩罚系数
+    collision_threshold = 0.4    # 碰撞阈值，距离小于0.5m时给予惩罚
     
 class QuadcopterSwarmEnv(DirectMARLEnv):
     cfg: QuadcopterSwarmEnvCfg
@@ -174,21 +172,20 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.robot_inertias = {agent: self.robots[agent].root_physx_view.get_inertias()[0, 0] for agent in self.cfg.possible_agents}
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
 
-        # 初始化共享目标点，而非每个智能体有单独的目标点
-        # self.desired_pos_w = {agent: torch.zeros((self.num_envs, 3), device=self.device) for agent in self.cfg.possible_agents}
-        self.desired_pos_w = torch.zeros((self.num_envs, 3), device=self.device)
+        # Initialize desired positions for each agent
+        self.desired_pos_w = {agent: torch.zeros((self.num_envs, 3), device=self.device) for agent in self.cfg.possible_agents}
 
         # Initialize episode sums for each agent and each reward component
         self.episode_sums = {}
         for agent in self.cfg.possible_agents:
-            for key in ["lin_vel", "ang_vel", "distance_to_goal", "survival", "died"]:  # 添加died到跟踪的奖励组件中
+            for key in ["lin_vel", "ang_vel", "distance_to_goal", "survival", "died", "collision"]:  # 添加collision到跟踪的奖励组件中
                 self.episode_sums[f"{agent}_{key}"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Initialize extras dictionary with proper structure
         self.extras = {"log": {}}
         # Initialize base metrics as tensors for all envs
         for agent in self.cfg.possible_agents:
-            for key in ["lin_vel", "ang_vel", "distance_to_goal", "survival", "died"]:  # 同样更新log字典
+            for key in ["lin_vel", "ang_vel", "distance_to_goal", "survival", "died", "collision"]:  # 同样更新log字典
                 self.extras["log"][f"Rewards/{agent}/{key}"] = torch.zeros(self.num_envs, device=self.device)
             self.extras["log"][f"Metrics/final_distance_to_goal/{agent}"] = torch.zeros(self.num_envs, device=self.device)
         self.extras["log"]["Episode_Termination/died"] = torch.zeros(self.num_envs, device=self.device)
@@ -262,20 +259,16 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if self.cfg.debug_vis_goal:
-                # 为每个智能体创建目标位置可视化器
-                self.goal_pos_visualizers = {}
-                for i, agent in enumerate(self.cfg.possible_agents):
-                    marker_cfg = CUBOID_MARKER_CFG.copy()
-                    marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
-                    marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
-                    marker_cfg.prim_path = f"/Visuals/Command/goal_{i}"
-                    self.goal_pos_visualizers[agent] = VisualizationMarkers(marker_cfg)
-                    self.goal_pos_visualizers[agent].set_visibility(True)
+                # 为统一目标点创建可视化器
+                marker_cfg = CUBOID_MARKER_CFG.copy()
+                marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
+                marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
+                marker_cfg.prim_path = f"/Visuals/Command/unified_goal"
+                self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
+                self.goal_pos_visualizer.set_visibility(True)
             else:
-                if hasattr(self, "goal_pos_visualizers"):
-                    for agent in self.cfg.possible_agents:
-                        if agent in self.goal_pos_visualizers:
-                            self.goal_pos_visualizers[agent].set_visibility(False)
+                if hasattr(self, "goal_pos_visualizer"):
+                    self.goal_pos_visualizer.set_visibility(False)
 
             if self.cfg.debug_vis_action:
                 # 为每个智能体创建路径点可视化器
@@ -403,53 +396,20 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         observations = {}
+        # 使用统一的目标点（以drone_0的目标点为准）
+        unified_goal = self.desired_pos_w["drone_0"]
         
-        # 预计算所有飞机的位置和姿态
-        all_positions = torch.stack([self.robots[agent].data.root_pos_w for agent in self.possible_agents], dim=1)  # [num_envs, num_drones, 3]
-        all_quats = torch.stack([self.robots[agent].data.root_quat_w for agent in self.possible_agents], dim=1)  # [num_envs, num_drones, 4]
-        
-        for agent_idx, agent in enumerate(self.possible_agents):
-            # 计算目标在机体坐标系下的相对位置
+        for agent in self.possible_agents:
+            # 计算目标在机体坐标系下的相对位置（类似于quadcopter_env.py的实现）
             goal_in_body_frame = quat_rotate(quat_inv(self.robots[agent].data.root_quat_w), 
-                                            self.desired_pos_w - self.robots[agent].data.root_pos_w)
+                                            unified_goal - self.robots[agent].data.root_pos_w)
             
-            # 计算其他飞机在机体坐标系下的相对位置
-            # 获取当前飞机的姿态
-            current_quat = all_quats[:, agent_idx]  # [num_envs, 4]
-            current_pos = all_positions[:, agent_idx]  # [num_envs, 3]
-            
-            # 计算所有其他飞机相对于当前飞机的相对位置
-            relative_pos = all_positions - current_pos.unsqueeze(1)  # [num_envs, num_drones, 3]
-            
-            # 创建掩码，排除当前飞机
-            mask = torch.ones((self.num_envs, len(self.possible_agents)), dtype=torch.bool, device=self.device)
-            mask[:, agent_idx] = False
-            
-            # 应用掩码并重塑
-            relative_pos = relative_pos[mask].reshape(self.num_envs, -1, 3)  # [num_envs, num_drones-1, 3]
-            
-            # 转换到机体坐标系
-            relative_pos_body = quat_rotate(quat_inv(current_quat).unsqueeze(1), relative_pos)  # [num_envs, num_drones-1, 3]
-            
-            # 计算距离
-            distances = torch.linalg.norm(relative_pos, dim=2, keepdim=True)  # [num_envs, num_drones-1, 1]
-            
-            # 计算单位方向向量
-            directions = relative_pos_body / (distances + 1e-6)  # [num_envs, num_drones-1, 3]
-            
-            # 将方向向量和距离拼接
-            other_drones_info = torch.cat([directions, distances], dim=2)  # [num_envs, num_drones-1, 4]
-            
-            # 重塑为单个向量
-            other_drones_info = other_drones_info.reshape(self.num_envs, -1)  # [num_envs, (num_drones-1)*4]
-            
-            # 将目标相对位置、四元数姿态、世界坐标系下的速度和与其他飞机的相对位置信息拼接成观察向量
+            # 将目标相对位置、四元数姿态和世界坐标系下的速度拼接成观察向量
             obs = torch.cat(
                 [
                     goal_in_body_frame,                   # 目标在机体坐标系下的相对位置 (3)
                     self.robots[agent].data.root_quat_w,  # 四元数姿态 (4)
                     self.robots[agent].data.root_vel_w,   # 世界坐标系下的线速度和角速度 (6)
-                    other_drones_info                     # 与其他飞机的相对位置信息 (num_drones-1) * 4
                 ],
                 dim=-1,
             )
@@ -463,57 +423,64 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         # 获取死亡状态信息用于计算died奖励
         died_agents, _ = self._get_dones()
         
-        # 预计算所有飞机的位置
-        all_positions = torch.stack([self.robots[agent].data.root_pos_w for agent in self.possible_agents], dim=1)  # [num_envs, num_drones, 3]
+        # 使用统一的目标点（以drone_0的目标点为准）
+        unified_goal = self.desired_pos_w["drone_0"]
         
-        # 计算所有飞机之间的距离矩阵
-        # 使用广播机制计算所有飞机之间的距离
-        diff = all_positions.unsqueeze(2) - all_positions.unsqueeze(1)  # [num_envs, num_drones, num_drones, 3]
-        distance_matrix = torch.linalg.norm(diff, dim=3)  # [num_envs, num_drones, num_drones]
+        # 计算所有飞机之间的碰撞惩罚
+        collision_penalties = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.possible_agents}
         
-        # 将对角线元素设置为无穷大，避免自己与自己计算距离
-        mask = torch.eye(len(self.possible_agents), dtype=torch.bool, device=self.device)
-        distance_matrix[:, mask] = float('inf')
+        # 计算每对飞机之间的距离
+        for i, agent1 in enumerate(self.possible_agents):
+            for j, agent2 in enumerate(self.possible_agents[i+1:], i+1):
+                # 计算两个飞机之间的距离
+                distance = torch.linalg.norm(
+                    self.robots[agent1].data.root_pos_w - self.robots[agent2].data.root_pos_w,
+                    dim=1
+                )
+                
+                # 使用sigmoid函数计算平滑的碰撞惩罚
+                # 当距离小于阈值时，惩罚逐渐增加
+                # 使用sigmoid的变体：1 / (1 + exp(k*(d - d0)))
+                # 其中k控制惩罚的陡峭程度，d0是阈值
+                k = 20.0  # 控制惩罚的陡峭程度
+                d0 = self.cfg.collision_threshold
+                penalty = self.cfg.collision_reward_scale * (1.0 / (1.0 + torch.exp(k * (distance - d0))))
+                
+                # 将惩罚分配给两个飞机
+                collision_penalties[agent1] += penalty
+                collision_penalties[agent2] += penalty
+                
+                # 记录碰撞信息用于调试
+                self.extras["log"][f"Collision/{agent1}_{agent2}"] = penalty / self.cfg.collision_reward_scale  # 归一化到[0,1]范围
+                self.extras["log"][f"Distance/{agent1}_{agent2}"] = distance  # 记录实际距离
         
-        for agent_idx, agent in enumerate(self.possible_agents):
+        for agent in self.possible_agents:
             # Calculate raw components
             components = {
                 "lin_vel": torch.sum(torch.square(self.robots[agent].data.root_lin_vel_b), dim=1),
                 "ang_vel": torch.sum(torch.square(self.robots[agent].data.root_ang_vel_b), dim=1),
-                "distance_to_goal": torch.linalg.norm(self.desired_pos_w - self.robots[agent].data.root_pos_w, dim=1),
-                "survival": torch.ones(self.num_envs, device=self.device),
-                "died": died_agents[agent].float(),
-                "collision": torch.zeros(self.num_envs, device=self.device)
+                "distance_to_goal": torch.linalg.norm(unified_goal - self.robots[agent].data.root_pos_w, dim=1),
+                "survival": torch.ones(self.num_envs, device=self.device),  # 添加生存奖励组件，每一步都给予固定奖励
+                "died": died_agents[agent].float(),  # 添加死亡标志，用于计算死亡惩罚
+                "collision": collision_penalties[agent]  # 添加碰撞惩罚
             }
-            
-            # 计算防撞惩罚
-            # 获取当前飞机到其他所有飞机的距离
-            distances = distance_matrix[:, agent_idx]  # [num_envs, num_drones]
-            
-            # 只考虑距离小于1m的情况
-            collision_mask = distances < 1.0
-            
-            # 距离越近惩罚越大，使用指数衰减函数
-            collision_penalty = torch.exp(-distances * 5)  # [num_envs, num_drones]
-            
-            # 只对距离小于1m的情况应用惩罚
-            components["collision"] = torch.sum(torch.where(collision_mask, collision_penalty, torch.zeros_like(collision_penalty)), dim=1)
             
             # 记录原始距离，方便调试
             raw_distance = components["distance_to_goal"].clone()
             self.extras["log"][f"Raw_Components/{agent}/raw_distance"] = raw_distance
             
-            # 使用tanh函数计算距离奖励
+            # 使用tanh函数计算距离奖励，参考quadcopter_env.py的实现
+            # 1 - tanh(distance/scale)，距离为0时奖励为1，随距离增加而平滑减少
             components["distance_to_goal"] = 1.0 - torch.tanh(components["distance_to_goal"] / 3)
             
-            # Calculate final rewards with scaling factors
+            # Calculate final rewards with scaling factors（取消每步的时间因子self.step_dt）
             agent_rewards = {
                 "lin_vel": components["lin_vel"] * self.cfg.lin_vel_reward_scale,
                 "ang_vel": components["ang_vel"] * self.cfg.ang_vel_reward_scale,
                 "distance_to_goal": components["distance_to_goal"] * self.cfg.distance_to_goal_reward_scale,
                 "survival": components["survival"] * self.cfg.survival_reward_scale,
                 "died": components["died"] * self.cfg.died_reward_scale,
-                "collision": components["collision"] * self.cfg.collision_reward_scale
+                "collision": components["collision"]  # 碰撞惩罚不需要额外缩放
             }
             
             # Calculate total reward for this agent
@@ -522,7 +489,10 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             # Log individual reward components
             for key, value in agent_rewards.items():
                 self.episode_sums[f"{agent}_{key}"] = self.episode_sums.get(f"{agent}_{key}", torch.zeros_like(value)) + value
+                # Update the extras dictionary with the current values
                 self.extras["log"][f"Rewards/{agent}/{key}"] = value
+                
+                # 添加原始值记录
                 self.extras["log"][f"Raw_Components/{agent}/{key}"] = components[key]
             
             # 添加总奖励记录
@@ -574,10 +544,11 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.extras["log"]["Episode_Termination/died"] = torch.full((self.num_envs,), torch.count_nonzero(terminated["drone_0"][env_ids]).item(), device=self.device)
         self.extras["log"]["Episode_Termination/time_out"] = torch.full((self.num_envs,), torch.count_nonzero(time_out["drone_0"][env_ids]).item(), device=self.device)
         
-        # Update final distance to goal for each agent
+        # Update final distance to goal for each agent using the unified goal
+        unified_goal = self.desired_pos_w["drone_0"]
         for agent in self.possible_agents:
             final_distance_to_goal = torch.linalg.norm(
-                self.desired_pos_w[env_ids] - self.robots[agent].data.root_pos_w[env_ids], 
+                unified_goal[env_ids] - self.robots[agent].data.root_pos_w[env_ids], 
                 dim=1
             ).mean()
             self.extras["log"][f"Metrics/final_distance_to_goal/{agent}"] = torch.full((self.num_envs,), final_distance_to_goal.item(), device=self.device)
@@ -592,11 +563,15 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         self.has_prev_traj[env_ids].fill_(False)
         
-        # 为所有智能体生成一个共享目标点，而非每个智能体独立的目标点
-        # 水平方向距离
-        self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(-5.0, 5.0)
-        self.desired_pos_w[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_pos_w[env_ids, 2] = torch.zeros_like(self.desired_pos_w[env_ids, 2]).uniform_(0.5, 3.0)
+        # 为每个环境生成统一的目标点
+        unified_goal_positions = torch.zeros((len(env_ids), 3), device=self.device)
+        unified_goal_positions[:, :2] = torch.zeros((len(env_ids), 2), device=self.device).uniform_(-5.0, 5.0)
+        unified_goal_positions[:, :2] += self.terrain.env_origins[env_ids, :2]
+        unified_goal_positions[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 3.0)
+        
+        # 将统一的目标点分配给所有智能体
+        for agent in self.possible_agents:
+            self.desired_pos_w[agent][env_ids] = unified_goal_positions
         
         # Reset robot state
         for agent in self.possible_agents:
@@ -609,15 +584,8 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             self.robots[agent].write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
     def _debug_vis_callback(self, event):
-        if hasattr(self, "goal_pos_visualizers"):
-            # 只需要使用第一个智能体的可视化器来展示共享目标点
-            if "drone_0" in self.goal_pos_visualizers:
-                self.goal_pos_visualizers["drone_0"].visualize(translations=self.desired_pos_w)
-                
-            # 隐藏其他无人机的目标可视化器，因为现在只有一个共享目标
-            for i, agent in enumerate(self.cfg.possible_agents):
-                if i > 0 and agent in self.goal_pos_visualizers:
-                    self.goal_pos_visualizers[agent].set_visibility(False)
+        if hasattr(self, "goal_pos_visualizer"):
+            self.goal_pos_visualizer.visualize(translations=self.desired_pos_w["drone_0"])
 
         if self.visualize_new_cmd and hasattr(self, "waypoint_visualizers") and hasattr(self, "tailpoint_visualizers"):
             for agent in self.cfg.possible_agents:
@@ -625,13 +593,15 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                     p_odom = self.robots[agent].data.root_state_w[:, :3]
                     q_odom = self.robots[agent].data.root_state_w[:, 3:7]
 
-                    inner_pts_world = torch.zeros((self.num_envs, self.cfg.num_pieces - 1, 3), device=self.device)
-                    for i in range(self.cfg.num_pieces - 1):
-                        inner_pts_world[:, i] = quat_rotate(q_odom, self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + p_odom
-
-                    inner_pts_flat = inner_pts_world.reshape(-1, 3)
-                    self.waypoint_visualizers[agent].visualize(translations=inner_pts_flat)
+                    # 当num_pieces=1时，inner_pts_world为空，不需要可视化
+                    if self.cfg.num_pieces > 1:
+                        inner_pts_world = torch.zeros((self.num_envs, self.cfg.num_pieces - 1, 3), device=self.device)
+                        for i in range(self.cfg.num_pieces - 1):
+                            inner_pts_world[:, i] = quat_rotate(q_odom, self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + p_odom
+                        inner_pts_flat = inner_pts_world.reshape(-1, 3)
+                        self.waypoint_visualizers[agent].visualize(translations=inner_pts_flat)
                     
+                    # 始终可视化终点
                     p_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
                     self.tailpoint_visualizers[agent].visualize(translations=p_tail)
 
