@@ -174,6 +174,9 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         # Initialize desired positions for each agent
         self.desired_pos_w = {agent: torch.zeros((self.num_envs, 3), device=self.device) for agent in self.cfg.possible_agents}
+        
+        # 初始化每个智能体的轨迹终点位置
+        self.p_tail = {agent: torch.zeros((self.num_envs, 3), device=self.device) for agent in self.cfg.possible_agents}
 
         # Initialize episode sums for each agent and each reward component
         self.episode_sums = {}
@@ -326,18 +329,53 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             head_pva = torch.stack([p_odom, v_odom, a_odom], dim=2)
             head_pva_all.append(head_pva)
 
-            # Waypoints
+            # Waypoints - 定义为相对坐标
             inner_pts = torch.zeros((self.num_envs, 3, self.cfg.num_pieces - 1), device=self.device)
+            
+            # 以当前位置(p_odom)为原点
+            # 计算每个点相对于p_odom的位置
             for i in range(self.cfg.num_pieces - 1):
-                # Transform to world frame
-                inner_pts[:, :, i] = quat_rotate(q_odom, self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + p_odom
+                # 对每个点应用相同的旋转，但偏移量累加
+                if i > 0:
+                    # 累加之前的偏移量
+                    cumulative_offset = torch.zeros_like(self.waypoints[agent][:, :3])
+                    for j in range(i):
+                        cumulative_offset += self.waypoints[agent][:, 3 * j : 3 * (j + 1)]
+                    
+                    # 应用累加的偏移量
+                    relative_pos = cumulative_offset + self.waypoints[agent][:, 3 * i : 3 * (i + 1)]
+                else:
+                    # 第一个点直接使用
+                    relative_pos = self.waypoints[agent][:, 3 * i : 3 * (i + 1)]
+                
+                # 转换到世界坐标系，但只为了在world下可视化
+                world_pos = quat_rotate(q_odom, relative_pos * self.cfg.p_max[agent]) + p_odom
+                inner_pts[:, :, i] = world_pos
+                
             inner_pts_all.append(inner_pts)
 
-            # Tail states, transformed to world frame
-            p_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
+            # Tail states
+            # 计算终点位置：累加所有偏移量
+            if self.cfg.num_pieces > 1:
+                cumulative_offset = torch.zeros_like(self.waypoints[agent][:, :3])
+                for i in range(self.cfg.num_pieces - 1):
+                    cumulative_offset += self.waypoints[agent][:, 3 * i : 3 * (i + 1)]
+                
+                # 添加最后一段偏移量
+                cumulative_offset += self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * self.cfg.num_pieces]
+                
+                # 转换到世界坐标系，但起点是p_odom
+                tail_relative_pos = cumulative_offset
+            else:
+                # 如果只有一个段，直接使用
+                tail_relative_pos = self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * self.cfg.num_pieces]
+            
+            # 计算世界坐标系中的终点位置（用于可视化和奖励计算）
+            self.p_tail[agent] = quat_rotate(q_odom, tail_relative_pos * self.cfg.p_max[agent]) + p_odom
+                
             v_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max[agent])
             a_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max[agent])
-            tail_pva = torch.stack([p_tail, v_tail, a_tail], dim=2)
+            tail_pva = torch.stack([self.p_tail[agent], v_tail, a_tail], dim=2)
             tail_pva_all.append(tail_pva)
 
             durations = torch.full((self.num_envs, self.cfg.num_pieces), self.cfg.duration, device=self.device)
@@ -439,9 +477,6 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                 )
                 
                 # 使用sigmoid函数计算平滑的碰撞惩罚
-                # 当距离小于阈值时，惩罚逐渐增加
-                # 使用sigmoid的变体：1 / (1 + exp(k*(d - d0)))
-                # 其中k控制惩罚的陡峭程度，d0是阈值
                 k = 20.0  # 控制惩罚的陡峭程度
                 d0 = self.cfg.collision_threshold
                 penalty = self.cfg.collision_reward_scale * (1.0 / (1.0 + torch.exp(k * (distance - d0))))
@@ -451,36 +486,42 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                 collision_penalties[agent2] += penalty
                 
                 # 记录碰撞信息用于调试
-                self.extras["log"][f"Collision/{agent1}_{agent2}"] = penalty / self.cfg.collision_reward_scale  # 归一化到[0,1]范围
-                self.extras["log"][f"Distance/{agent1}_{agent2}"] = distance  # 记录实际距离
+                self.extras["log"][f"Collision/{agent1}_{agent2}"] = penalty / self.cfg.collision_reward_scale
+                self.extras["log"][f"Distance/{agent1}_{agent2}"] = distance
         
         for agent in self.possible_agents:
+            # 计算当前无人机位置到目标的距离
+            distance_to_goal = torch.linalg.norm(unified_goal - self.robots[agent].data.root_pos_w, dim=1)
+            # 计算轨迹终点到目标的距离
+            tail_to_goal = torch.linalg.norm(unified_goal - self.p_tail[agent], dim=1)
+            
+            # 使用指数函数计算距离奖励
+            alpha = 0.5  # 控制衰减速度
+            distance_to_goal_reward = torch.exp(-alpha * (distance_to_goal + tail_to_goal))
+            
             # Calculate raw components
             components = {
                 "lin_vel": torch.sum(torch.square(self.robots[agent].data.root_lin_vel_b), dim=1),
                 "ang_vel": torch.sum(torch.square(self.robots[agent].data.root_ang_vel_b), dim=1),
-                "distance_to_goal": torch.linalg.norm(unified_goal - self.robots[agent].data.root_pos_w, dim=1),
-                "survival": torch.ones(self.num_envs, device=self.device),  # 添加生存奖励组件，每一步都给予固定奖励
-                "died": died_agents[agent].float(),  # 添加死亡标志，用于计算死亡惩罚
-                "collision": collision_penalties[agent]  # 添加碰撞惩罚
+                "distance_to_goal": distance_to_goal,
+                "tail_to_goal": tail_to_goal,
+                "survival": torch.ones(self.num_envs, device=self.device),
+                "died": died_agents[agent].float(),
+                "collision": collision_penalties[agent]
             }
             
             # 记录原始距离，方便调试
-            raw_distance = components["distance_to_goal"].clone()
-            self.extras["log"][f"Raw_Components/{agent}/raw_distance"] = raw_distance
+            self.extras["log"][f"Raw_Components/{agent}/raw_distance"] = distance_to_goal
+            self.extras["log"][f"Raw_Components/{agent}/tail_to_goal"] = tail_to_goal
             
-            # 使用tanh函数计算距离奖励，参考quadcopter_env.py的实现
-            # 1 - tanh(distance/scale)，距离为0时奖励为1，随距离增加而平滑减少
-            components["distance_to_goal"] = 1.0 - torch.tanh(components["distance_to_goal"] / 3)
-            
-            # Calculate final rewards with scaling factors（取消每步的时间因子self.step_dt）
+            # Calculate final rewards with scaling factors
             agent_rewards = {
                 "lin_vel": components["lin_vel"] * self.cfg.lin_vel_reward_scale,
                 "ang_vel": components["ang_vel"] * self.cfg.ang_vel_reward_scale,
-                "distance_to_goal": components["distance_to_goal"] * self.cfg.distance_to_goal_reward_scale,
+                "distance_to_goal": distance_to_goal_reward * self.cfg.distance_to_goal_reward_scale,
                 "survival": components["survival"] * self.cfg.survival_reward_scale,
                 "died": components["died"] * self.cfg.died_reward_scale,
-                "collision": components["collision"]  # 碰撞惩罚不需要额外缩放
+                "collision": components["collision"]
             }
             
             # Calculate total reward for this agent
@@ -489,11 +530,16 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             # Log individual reward components
             for key, value in agent_rewards.items():
                 self.episode_sums[f"{agent}_{key}"] = self.episode_sums.get(f"{agent}_{key}", torch.zeros_like(value)) + value
-                # Update the extras dictionary with the current values
                 self.extras["log"][f"Rewards/{agent}/{key}"] = value
                 
                 # 添加原始值记录
-                self.extras["log"][f"Raw_Components/{agent}/{key}"] = components[key]
+                if key in components:
+                    self.extras["log"][f"Raw_Components/{agent}/{key}"] = components[key]
+            
+            # 记录距离奖励组件
+            self.extras["log"][f"Distance_Components/{agent}/drone_to_goal"] = distance_to_goal
+            self.extras["log"][f"Distance_Components/{agent}/tail_to_goal"] = tail_to_goal
+            self.extras["log"][f"Distance_Components/{agent}/combined_reward"] = distance_to_goal_reward
             
             # 添加总奖励记录
             self.extras["log"][f"Total_Reward/{agent}"] = agent_total_reward
@@ -567,7 +613,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         unified_goal_positions = torch.zeros((len(env_ids), 3), device=self.device)
         unified_goal_positions[:, :2] = torch.zeros((len(env_ids), 2), device=self.device).uniform_(-5.0, 5.0)
         unified_goal_positions[:, :2] += self.terrain.env_origins[env_ids, :2]
-        unified_goal_positions[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 3.0)
+        unified_goal_positions[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(1.0, 1.3)
         
         # 将统一的目标点分配给所有智能体
         for agent in self.possible_agents:
@@ -601,9 +647,8 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                         inner_pts_flat = inner_pts_world.reshape(-1, 3)
                         self.waypoint_visualizers[agent].visualize(translations=inner_pts_flat)
                     
-                    # 始终可视化终点
-                    p_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
-                    self.tailpoint_visualizers[agent].visualize(translations=p_tail)
+                    # 使用存储的轨迹终点进行可视化
+                    self.tailpoint_visualizers[agent].visualize(translations=self.p_tail[agent])
 
             self.visualize_new_cmd = False
 
