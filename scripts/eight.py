@@ -6,13 +6,15 @@ import sys
 from isaaclab.app import AppLauncher
 
 
-# TODO: Improve import modality
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
-
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Eight trajectory generation and tracking for single quadcopter environment.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
-parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument(
+    "--task",
+    type=str,
+    default=None,
+    help="Name of the task. Optional Includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0.",
+)
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -20,13 +22,20 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
+elif args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
+    raise ValueError("FAST-Quadcopter-Swarm-Direct-v0 is not supported for eight trajectory generation and tracking #^#")
 elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
     args_cli.enable_cameras = True
+elif args_cli.task != "FAST-Quadcopter-Direct-v0":
+    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0.")
 
 # Launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+
+# TODO: Improve import modality
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 
 import gymnasium as gym
 from loguru import logger

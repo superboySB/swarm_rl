@@ -128,7 +128,7 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     # Reward scales
     lin_vel_reward_scale = -0.05
     ang_vel_reward_scale = -0.01
-    distance_to_goal_reward_scale = 15.0
+    dist_to_goal_reward_scale = 15.0
 
 
 @configclass
@@ -164,10 +164,10 @@ class QuadcopterCameraEnv(DirectRLEnv):
             raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
 
         # Goal position
-        self.desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
 
         # Logging
-        self.episode_sums = {key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) for key in ["lin_vel", "ang_vel", "distance_to_goal"]}
+        self.episode_sums = {key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) for key in ["lin_vel", "ang_vel", "dist_to_goal"]}
 
         # Get specific indices
         self.body_id = self.robot.find_bodies("body")[0]
@@ -310,21 +310,21 @@ class QuadcopterCameraEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         lin_vel = torch.sum(torch.square(self.robot.data.root_lin_vel_b), dim=1)
         ang_vel = torch.sum(torch.square(self.robot.data.root_ang_vel_b), dim=1)
-        distance_to_goal = torch.linalg.norm(self.desired_pos_w - self.robot.data.root_pos_w, dim=1)
-        distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
-        rewards = {
+        dist_to_goal = torch.linalg.norm(self.desired_position - self.robot.data.root_pos_w, dim=1)
+        dist_to_goal_mapped = 1 - torch.tanh(dist_to_goal / 0.8)
+        reward = {
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
-            "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+            "dist_to_goal": dist_to_goal_mapped * self.cfg.dist_to_goal_reward_scale * self.step_dt,
         }
-        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # Logging
-        for key, value in rewards.items():
+        for key, value in reward.items():
             self.episode_sums[key] += value
+        reward = torch.sum(torch.stack(list(reward.values())), dim=0)
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < -0.1, self.robot.data.root_pos_w[:, 2] > 10.0)
+        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 10.0)
         ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
         died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
@@ -337,7 +337,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
 
         # Logging
-        final_distance_to_goal = torch.linalg.norm(self.desired_pos_w[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1).mean()
+        final_dist_to_goal = torch.linalg.norm(self.desired_position[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1).mean()
         extras = dict()
         for key in self.episode_sums.keys():
             episodic_sum_avg = torch.mean(self.episode_sums[key][env_ids])
@@ -348,7 +348,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
         extras = dict()
         extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
-        extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
+        extras["Metrics/final_dist_to_goal"] = final_dist_to_goal.item()
         self.extras["log"].update(extras)
 
         self.robot.reset(env_ids)
@@ -360,9 +360,9 @@ class QuadcopterCameraEnv(DirectRLEnv):
         self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
-        self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
-        self.desired_pos_w[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_pos_w[env_ids, 2] = torch.zeros_like(self.desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
+        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(-2.0, 2.0)
+        self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
+        self.desired_position[env_ids, 2] = torch.zeros_like(self.desired_position[env_ids, 2]).uniform_(0.5, 1.5)
 
         # Reset robot state
         joint_pos = self.robot.data.default_joint_pos[env_ids]
@@ -389,7 +389,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
     def _debug_vis_callback(self, event):
         # Update the markers
-        self.goal_pos_visualizer.visualize(self.desired_pos_w)
+        self.goal_pos_visualizer.visualize(self.desired_position)
 
 
 gym.register(

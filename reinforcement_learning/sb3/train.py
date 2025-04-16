@@ -13,17 +13,19 @@ import sys
 from isaaclab.app import AppLauncher
 
 
-# TODO: Improve import modality
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with Stable-Baselines3.")
-parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument(
+    "--task",
+    type=str,
+    default=None,
+    help="Name of the task. Optional Includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0.",
+)
 parser.add_argument("--num_envs", type=int, default=4096, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--save_interval", type=int, default=2e6, help="Interval between checkpoints (in steps).")
+parser.add_argument("--save_interval", type=int, default=5e6, help="Interval between checkpoints (in steps).")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in frames).")
 parser.add_argument("--pretrained_model", type=str, default=None, help="Path to the pre-trained model.")
@@ -33,6 +35,12 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
+elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
+    args_cli.enable_cameras = True
+elif args_cli.task not in ["FAST-Quadcopter-Direct-v0", "FAST-Quadcopter-Swarm-Direct-v0"]:
+    raise ValueError(
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0."
+    )
 if args_cli.video:
     args_cli.enable_cameras = True
 # Clear out sys.argv for Hydra
@@ -45,12 +53,16 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
+# TODO: Improve import modality
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+
 from datetime import datetime
 import gymnasium as gym
 from loguru import logger
 import numpy as np
 import random
 import rclpy
+import shutil
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -82,11 +94,21 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
         agent_cfg["n_timesteps"] = args_cli.max_iterations * agent_cfg["n_steps"] * env_cfg.scene.num_envs
 
     run_info = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_root_path = os.path.abspath(os.path.join("outputs", "sb3", args_cli.task))
+    log_root_path = os.path.abspath(os.path.join("outputs", "sb3", args_cli.task, "flowline"))
     log_dir = os.path.join(log_root_path, run_info)
     # Dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    env_dir = os.path.join(os.path.dirname(__file__), "../../", "envs")
+    dump_env_src_dir = os.path.join(log_dir, "src")
+    os.makedirs(dump_env_src_dir, exist_ok=True)
+    if args_cli.task == "FAST-Quadcopter-Direct-v0":
+        env_src_file = "quadcopter_env.py"
+    elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
+        env_src_file = "camera_env.py"
+    elif args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
+        env_src_file = "swarm_env.py"
+    shutil.copy2(os.path.join(env_dir, env_src_file), os.path.join(dump_env_src_dir, env_src_file))
 
     # Post-process agent configuration
     agent_cfg = process_sb3_cfg(agent_cfg)

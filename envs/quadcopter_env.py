@@ -55,8 +55,9 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     viewer = ViewerCfg(eye=(-10.0, -10.0, 4.0))
 
     # Reward weights
-    distance_to_goal_reward_weight = 1.0  # Reward for approaching the goal
-    dist_btw_wps_uniformity_reward_weight = 1.0  # Reward for uniform distances between waypoints
+    dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
+    tail_wp_dist_to_goal_reward_weight = 0.0  # Reward for tail waypoint to approach the goal
+    dist_btw_wps_uniformity_reward_weight = 0.0  # Reward for uniform distances between waypoints
     angle_restriction_reward_weight = 0.0  # Reward for restricting angles between consecutive path segments
     action_temporal_smoothness_reward_weight = 0.0  # Reward for temporal smoothness of actions
 
@@ -134,10 +135,10 @@ class QuadcopterEnv(DirectRLEnv):
             raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
 
         # Goal position
-        self.desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
 
         # Logging
-        self.episode_sums = {key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) for key in ["lin_vel", "ang_vel", "distance_to_goal"]}
+        self.episode_sums = {key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) for key in ["lin_vel", "ang_vel", "dist_to_goal"]}
 
         # Get specific indices
         self.body_id = self.robot.find_bodies("body")[0]
@@ -155,6 +156,10 @@ class QuadcopterEnv(DirectRLEnv):
         self.controller = Controller(self.step_dt, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device))
         self.control_counter = 0
 
+        # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
+        self.set_debug_vis(self.cfg.debug_vis)
+        self.visualize_new_cmd = False
+
         # ROS2
         self.node = Node("quadcopter_env", namespace="quadcopter_env")
         self.odom_pub = self.node.create_publisher(Odometry, "odom", 10)
@@ -164,10 +169,6 @@ class QuadcopterEnv(DirectRLEnv):
         self.j_desired_pub = self.node.create_publisher(Vector3Stamped, "j_desired", 10)
         self.m_desired_pub = self.node.create_publisher(Vector3Stamped, "m_desired", 10)
         self.yaw_yaw_dot_thrust_desired_pub = self.node.create_publisher(PointStamped, "yaw_yaw_dot_thrust_desired", 10)
-
-        # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
-        self.set_debug_vis(self.cfg.debug_vis)
-        self.visualize_new_cmd = False
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
@@ -266,7 +267,7 @@ class QuadcopterEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, env_ids=self.robot._ALL_INDICES)
 
     def _get_observations(self) -> dict:
-        goal_in_body_frame = quat_rotate(quat_inv(self.robot.data.root_quat_w), self.desired_pos_w - self.robot.data.root_pos_w)
+        goal_in_body_frame = quat_rotate(quat_inv(self.robot.data.root_quat_w), self.desired_position - self.robot.data.root_pos_w)
         obs = torch.cat(
             [
                 goal_in_body_frame,
@@ -279,9 +280,11 @@ class QuadcopterEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         # 1. Goal reaching reward
-        distance_to_goal = torch.linalg.norm(self.desired_pos_w - self.robot.data.root_pos_w, dim=1)
-        tail_wp_dist_to_goal = torch.linalg.norm(self.desired_pos_w - self.p_tail, dim=1)
-        distance_to_goal_reward = torch.exp(-0.5 * (distance_to_goal + tail_wp_dist_to_goal))
+        dist_to_goal = torch.linalg.norm(self.desired_position - self.robot.data.root_pos_w, dim=1)
+        dist_to_goal_reward = torch.exp(-1.0 * dist_to_goal)
+
+        tail_wp_dist_to_goal = torch.linalg.norm(self.desired_position - self.p_tail, dim=1)
+        tail_wp_dist_to_goal_reward = torch.exp(-1.0 * tail_wp_dist_to_goal)
 
         # 2. Waypoint distance uniformity reward
         wps = [torch.zeros(self.num_envs, 3, device=self.device)]
@@ -297,8 +300,8 @@ class QuadcopterEnv(DirectRLEnv):
             dist_btw_wps = torch.stack(dist_btw_wps, dim=1)
             dist_mean = torch.mean(dist_btw_wps, dim=1)
             dist_std = torch.std(dist_btw_wps, dim=1)
-            dist_cv = torch.where(dist_mean > 1e-6, dist_std / dist_mean, torch.zeros_like(dist_mean))
-            dist_btw_wps_uniformity_reward = torch.exp(-2.3 * dist_cv)
+            dist_cv = torch.where(dist_mean > 1.0, dist_std / dist_mean, dist_std)
+            dist_btw_wps_uniformity_reward = torch.exp(-1.0 * dist_cv)
         else:
             dist_btw_wps_uniformity_reward = torch.zeros(self.num_envs, device=self.device)
 
@@ -328,18 +331,19 @@ class QuadcopterEnv(DirectRLEnv):
             action_temporal_smoothness_reward = torch.exp(-0.5 * waypoint_diff)
         self.prev_waypoints = self.waypoints.clone()
 
-        rewards = {
-            "distance_to_goal": distance_to_goal_reward * self.cfg.distance_to_goal_reward_weight * self.step_dt,
+        reward = {
+            "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
+            "tail_wp_dist_to_goal": tail_wp_dist_to_goal_reward * self.cfg.tail_wp_dist_to_goal_reward_weight * self.step_dt,
             "dist_btw_wps_uniformity": dist_btw_wps_uniformity_reward * self.cfg.dist_btw_wps_uniformity_reward_weight * self.step_dt,
             "angle_restriction": angle_restriction_reward * self.cfg.angle_restriction_reward_weight * self.step_dt,
             "action_temporal_smoothness": action_temporal_smoothness_reward * self.cfg.action_temporal_smoothness_reward_weight * self.step_dt,
         }
-        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+        reward = torch.sum(torch.stack(list(reward.values())), dim=0)
 
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < -0.1, self.robot.data.root_pos_w[:, 2] > 10.0)
+        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 10.0)
         ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
         died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
@@ -352,7 +356,7 @@ class QuadcopterEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
 
         # Logging
-        final_distance_to_goal = torch.linalg.norm(self.desired_pos_w[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1).mean()
+        final_dist_to_goal = torch.linalg.norm(self.desired_position[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1).mean()
         extras = dict()
         for key in self.episode_sums.keys():
             episodic_sum_avg = torch.mean(self.episode_sums[key][env_ids])
@@ -363,7 +367,7 @@ class QuadcopterEnv(DirectRLEnv):
         extras = dict()
         extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
-        extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
+        extras["Metrics/final_dist_to_goal"] = final_dist_to_goal.item()
         self.extras["log"].update(extras)
 
         self.robot.reset(env_ids)
@@ -375,9 +379,9 @@ class QuadcopterEnv(DirectRLEnv):
         self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
-        self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(0.0, 10.0)
-        self.desired_pos_w[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_pos_w[env_ids, 2] = torch.zeros_like(self.desired_pos_w[env_ids, 2]).uniform_(1.0, 1.3)
+        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(0.0, 10.0)
+        self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
+        self.desired_position[env_ids, 2] = torch.zeros_like(self.desired_position[env_ids, 2]).uniform_(1.0, 1.3)
 
         # Reset robot state
         joint_pos = self.robot.data.default_joint_pos[env_ids]
@@ -421,7 +425,7 @@ class QuadcopterEnv(DirectRLEnv):
 
     def _debug_vis_callback(self, event):
         if hasattr(self, "goal_pos_visualizer"):
-            self.goal_pos_visualizer.visualize(translations=self.desired_pos_w)
+            self.goal_pos_visualizer.visualize(translations=self.desired_position)
 
         if self.visualize_new_cmd and hasattr(self, "waypoint_visualizers"):
             for i in range(self.cfg.num_pieces):

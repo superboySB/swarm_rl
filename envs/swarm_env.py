@@ -11,11 +11,13 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, ViewerCfg
 from isaaclab.envs.ui import BaseEnvWindow
+from isaaclab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_rotate
+from isaaclab.utils.math import quat_inv, quat_rotate
+from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils.utils import quat_to_ang_between_z_body_and_z_world
@@ -46,16 +48,20 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 @configclass
 class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-5.0, -5.0, 4.0))
+    viewer = ViewerCfg(eye=(-10.0, -10.0, 4.0))
+
+    # Reward weights
+    dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
+    mutual_collision_avoidance_reward_weight = 1.0  # Reward for mutual collision avoidance between drones
 
     # Env
-    episode_length_s = 60.0
+    episode_length_s = 13.0
     physics_freq = 200
     control_freq = 100
     mpc_freq = 10
     gui_render_freq = 50
     control_decimation = physics_freq // control_freq
-    num_drones = 9  # Number of drones per environment
+    num_drones = 4  # Number of drones per environment
     decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     render_decimation = physics_freq // gui_render_freq
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
@@ -106,11 +112,16 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=6, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=5, replicate_physics=True)
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
-    init_gap = 0.8
+    init_gap = 1.5
+
+    # Debug visualization
+    debug_vis = True
+    debug_vis_goal = True
+    debug_vis_action = True
 
 
 class QuadcopterSwarmEnv(DirectMARLEnv):
@@ -125,6 +136,9 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         if 1 / self.cfg.mpc_freq > self.cfg.num_pieces * self.cfg.duration:
             raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
 
+        # Goal position
+        self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
+
         # Get specific body indices for each drone
         self.body_ids = {agent: self.robots[agent].find_bodies("body")[0] for agent in self.cfg.possible_agents}
 
@@ -137,13 +151,16 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.has_prev_traj = torch.tensor([False] * self.num_envs, device=self.device)
 
         # Controllers
-        self.actions = {}
-        self.a_desired_total, self.thrust_desired, self._thrust_desired, self.q_desired, self.w_desired, self.m_desired = {}, {}, {}, {}, {}, {}
+        self.actions, self.a_desired_total, self.thrust_desired, self._thrust_desired, self.q_desired, self.w_desired, self.m_desired = {}, {}, {}, {}, {}, {}, {}
         self.controllers = {
             agent: Controller(self.step_dt, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device))
             for agent in self.cfg.possible_agents
         }
         self.control_counter = 0
+
+        # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
+        self.set_debug_vis(self.cfg.debug_vis)
+        self.visualize_new_cmd = False
 
     def _setup_scene(self):
         self.robots = {}
@@ -179,6 +196,9 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         for agent in self.possible_agents:
             # Action parametrization: waypoints in body frame
             self.waypoints[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+
+            for i in range(self.cfg.num_pieces - 1):
+                self.waypoints[agent][:, 3 * (i + 1) : 3 * (i + 2)] += self.waypoints[agent][:, 3 * i : 3 * (i + 1)]
 
             # Head states
             p_odom = self.robots[agent].data.root_state_w[:, :3]
@@ -223,6 +243,10 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.execution_time = torch.zeros(self.num_envs, device=self.device)
         self.has_prev_traj.fill_(True)
 
+        self.p_odom_for_vis = {agent: self.robots[agent].data.root_state_w[:, :3].clone() for agent in self.possible_agents}
+        self.q_odom_for_vis = {agent: self.robots[agent].data.root_state_w[:, 3:7].clone() for agent in self.possible_agents}
+        self.visualize_new_cmd = True
+
     def _apply_action(self) -> None:
         if self.control_counter % self.cfg.control_decimation == 0:
             start = time.perf_counter()
@@ -256,17 +280,52 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.execution_time += self.physics_dt
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
-        observations = {agent: self.robots[agent].data.root_state_w.clone() for agent in self.possible_agents}
+        observations = {}
+        for agent in self.possible_agents:
+            goal_in_body_frame = quat_rotate(quat_inv(self.robots[agent].data.root_quat_w), self.desired_position - self.robots[agent].data.root_pos_w)
+            obs = torch.cat(
+                [
+                    goal_in_body_frame,
+                    self.robots[agent].data.root_quat_w.clone(),
+                    self.robots[agent].data.root_vel_w.clone(),
+                ],
+                dim=-1,
+            )
+            observations[agent] = obs
         return observations
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
-        rewards = {agent: 0 for agent in self.possible_agents}
+        rewards = {}
+
+        safe_dist = 1.3
+        mutual_collision_avoidance_reward = torch.zeros(self.num_envs, device=self.device)
+        for i, agent_i in enumerate(self.possible_agents):
+            for _, agent_j in enumerate(self.possible_agents[i + 1 :], i + 1):
+                dist_btw_drones = torch.linalg.norm(self.robots[agent_i].data.root_pos_w - self.robots[agent_j].data.root_pos_w, dim=1)
+
+                unsafe_idx = dist_btw_drones < safe_dist
+                if unsafe_idx.any():
+                    unsafe_dist = dist_btw_drones[unsafe_idx]
+                    collision_penalty = 5.0 * (1 / unsafe_dist - 1 / safe_dist)
+                    mutual_collision_avoidance_reward[unsafe_idx] -= collision_penalty
+
+        for agent in self.possible_agents:
+            dist_to_goal = torch.linalg.norm(self.desired_position - self.robots[agent].data.root_pos_w, dim=1)
+            dist_to_goal_reward = torch.exp(-0.5 * dist_to_goal)
+
+            reward = {
+                "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
+                "mutual_collision_avoidance": mutual_collision_avoidance_reward / self.cfg.num_drones * self.cfg.mutual_collision_avoidance_reward_weight * self.step_dt,
+            }
+            reward = torch.sum(torch.stack(list(reward.values())), dim=0)
+
+            rewards[agent] = reward
         return rewards
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
-            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < -0.1, self.robots[agent].data.root_link_pos_w[:, 2] > 10.0)
+            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.5, self.robots[agent].data.root_link_pos_w[:, 2] > 10.0)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
             _died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
             died = torch.logical_or(died, _died)
@@ -279,6 +338,9 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self.robots["drone_0"]._ALL_INDICES
 
+        # FIXME: Logging
+        self.extras = {}
+
         for agent in self.possible_agents:
             self.robots[agent].reset(env_ids)
 
@@ -288,6 +350,11 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
         self.has_prev_traj[env_ids].fill_(False)
+
+        # Sample new commands
+        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(0.0, 10.0)
+        self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
+        self.desired_position[env_ids, 2] = torch.zeros_like(self.desired_position[env_ids, 2]).uniform_(1.0, 1.3)
 
         # Reset robot state
         for agent in self.possible_agents:
@@ -299,10 +366,62 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             self.robots[agent].write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
             self.robots[agent].write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        if debug_vis:
+            if self.cfg.debug_vis_goal:
+                if not hasattr(self, "goal_pos_visualizer"):
+                    marker_cfg = CUBOID_MARKER_CFG.copy()
+                    marker_cfg.markers["cuboid"].size = (0.07, 0.07, 0.07)
+                    marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0))
+                    marker_cfg.prim_path = "/Visuals/Command/goal"
+                    self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
+                self.goal_pos_visualizer.set_visibility(True)
+
+            if self.cfg.debug_vis_action:
+                if not hasattr(self, "waypoint_visualizers"):
+                    self.waypoint_visualizers = {}
+                    r_min, r_max = 0.01, 0.035
+                    color_s, color_e = (1.0, 0.0, 0.0), (0.1, 0.0, 0.0)
+                    for i, agent in enumerate(self.possible_agents):
+                        self.waypoint_visualizers[agent] = []
+                        for j in range(self.cfg.num_pieces):
+                            ratio = j / max(self.cfg.num_pieces - 1, 1)
+                            r = r_min + (r_max - r_min) * ratio
+                            c = (
+                                color_s[0] + (color_e[0] - color_s[0]) * ratio,
+                                color_s[1] + (color_e[1] - color_s[1]) * ratio,
+                                color_s[2] + (color_e[2] - color_s[2]) * ratio,
+                            )
+                            marker_cfg = VisualizationMarkersCfg(
+                                prim_path=f"/Visuals/Command/Robot_{i}/waypoint_{j}",
+                                markers={"sphere": sim_utils.SphereCfg(radius=r, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=c))},
+                            )
+                            self.waypoint_visualizers[agent].append(VisualizationMarkers(marker_cfg))
+                            self.waypoint_visualizers[agent][j].set_visibility(True)
+
+    def _debug_vis_callback(self, event):
+        if hasattr(self, "goal_pos_visualizer"):
+            self.goal_pos_visualizer.visualize(translations=self.desired_position)
+
+        if self.visualize_new_cmd and hasattr(self, "waypoint_visualizers"):
+            for agent in self.possible_agents:
+                for i in range(self.cfg.num_pieces):
+                    waypoint_world = (
+                        quat_rotate(self.q_odom_for_vis[agent], self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + self.p_odom_for_vis[agent]
+                    )
+                    self.waypoint_visualizers[agent][i].visualize(translations=waypoint_world)
+            self.visualize_new_cmd = False
+
+
+from config import agents
+
 
 gym.register(
     id="FAST-Quadcopter-Swarm-Direct-v0",
     entry_point=QuadcopterSwarmEnv,
     disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": QuadcopterSwarmEnvCfg},
+    kwargs={
+        "env_cfg_entry_point": QuadcopterSwarmEnvCfg,
+        "sb3_cfg_entry_point": f"{agents.__name__}:swarm_sb3_ppo_cfg.yaml",
+    },
 )

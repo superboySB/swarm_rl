@@ -5,16 +5,18 @@
 import argparse
 import os
 import sys
-from isaaclab.app import AppLauncher 
+from isaaclab.app import AppLauncher
 
-
-# TODO: Improve import modality
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from Stable-Baselines3.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
-parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument(
+    "--task",
+    type=str,
+    default=None,
+    help="Name of the task. Optional Includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0.",
+)
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during playing.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in frames).")
@@ -26,6 +28,12 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
+elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
+    args_cli.enable_cameras = True
+elif args_cli.task not in ["FAST-Quadcopter-Direct-v0", "FAST-Quadcopter-Swarm-Direct-v0"]:
+    raise ValueError(
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0."
+    )
 if args_cli.video:
     args_cli.enable_cameras = True
 
@@ -35,6 +43,9 @@ simulation_app = app_launcher.app
 
 
 """Rest everything follows."""
+
+# TODO: Improve import modality
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 import gymnasium as gym
 from loguru import logger
@@ -60,7 +71,7 @@ def main():
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric)
     agent_cfg = load_cfg_from_registry(args_cli.task, "sb3_cfg_entry_point")
 
-    log_root_path = os.path.join("outputs", "sb3", args_cli.task)
+    log_root_path = os.path.join("outputs", "sb3", args_cli.task, "flowline")
     log_root_path = os.path.abspath(log_root_path)
     if args_cli.checkpoint is None:
         checkpoint_path = get_checkpoint_path(log_root_path, ".*", "model_final.zip", ["models"])
