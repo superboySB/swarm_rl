@@ -55,11 +55,21 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     viewer = ViewerCfg(eye=(-10.0, -10.0, 4.0))
 
     # Reward weights
-    dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
-    tail_wp_dist_to_goal_reward_weight = 0.0  # Reward for tail waypoint to approach the goal
-    dist_btw_wps_uniformity_reward_weight = 0.0  # Reward for uniform distances between waypoints
-    angle_restriction_reward_weight = 0.0  # Reward for restricting angles between consecutive path segments
-    action_temporal_smoothness_reward_weight = 0.0  # Reward for temporal smoothness of actions
+    dist_to_goal_reward_weight = 2.0  # Reward for approaching the goal
+    tail_wp_dist_to_goal_reward_weight = 1.0  # Reward for tail waypoint to approach the goal
+    success_reward_weight = 10.0  # Additional reward while reaching goal
+    dist_btw_wps_uniformity_reward_weight = 3.0  # Reward for uniform distances between waypoints
+    angle_restriction_reward_weight = 3.0  # Reward for restricting angles between consecutive path segments
+    action_temporal_smoothness_reward_weight = 3.0  # Reward for temporal smoothness of actions
+
+    # Reward scaling factors
+    dist_to_goal_scale = 0.3  # Exponential decay factor for distance to goal
+    tail_wp_dist_to_goal_scale = 0.3  # Exponential decay factor for tail waypoint distance to goal
+    dist_btw_wps_uniformity_scale = 10.0  # Exponential decay factor for waypoint distance uniformity
+    angle_restriction_scale = 10.0  # Exponential decay factor for angle restriction
+    action_temporal_smoothness_scale = 1.0  # Exponential decay factor for action temporal smoothness
+
+    success_distance_threshold = 0.3  # Distance threshold for considering goal reached
 
     # Env
     episode_length_s = 13.0
@@ -281,10 +291,13 @@ class QuadcopterEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # 1. Goal reaching reward
         dist_to_goal = torch.linalg.norm(self.desired_position - self.robot.data.root_pos_w, dim=1)
-        dist_to_goal_reward = torch.exp(-1.0 * dist_to_goal)
+        dist_to_goal_reward = torch.exp(-self.cfg.dist_to_goal_scale * dist_to_goal)
 
         tail_wp_dist_to_goal = torch.linalg.norm(self.desired_position - self.p_tail, dim=1)
-        tail_wp_dist_to_goal_reward = torch.exp(-1.0 * tail_wp_dist_to_goal)
+        tail_wp_dist_to_goal_reward = torch.exp(-self.cfg.tail_wp_dist_to_goal_scale * tail_wp_dist_to_goal)
+
+        # Additional reward when the drone is close to goal
+        success_reward = torch.where(dist_to_goal < self.cfg.success_distance_threshold, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
 
         # 2. Waypoint distance uniformity reward
         wps = [torch.zeros(self.num_envs, 3, device=self.device)]
@@ -301,13 +314,13 @@ class QuadcopterEnv(DirectRLEnv):
             dist_mean = torch.mean(dist_btw_wps, dim=1)
             dist_std = torch.std(dist_btw_wps, dim=1)
             dist_cv = torch.where(dist_mean > 1.0, dist_std / dist_mean, dist_std)
-            dist_btw_wps_uniformity_reward = torch.exp(-1.0 * dist_cv)
+            dist_btw_wps_uniformity_reward = torch.exp(-self.cfg.dist_btw_wps_uniformity_scale * dist_cv)
         else:
             dist_btw_wps_uniformity_reward = torch.zeros(self.num_envs, device=self.device)
 
         # 3. Reward for restricting angles between consecutive path segments
         if self.cfg.num_pieces > 1:
-            cos_angs = []
+            angles = []
             for i in range(self.cfg.num_pieces - 1):
                 vec1 = wps[i + 1] - wps[i]
                 vec2 = wps[i + 2] - wps[i + 1]
@@ -317,10 +330,10 @@ class QuadcopterEnv(DirectRLEnv):
 
                 dot_product = torch.sum(vec1 * vec2, dim=1)
                 cos_ang = torch.where((vec1_norm > 1e-6) & (vec2_norm > 1e-6), dot_product / (vec1_norm * vec2_norm), torch.ones_like(dot_product))
-                cos_angs.append(cos_ang)
+                angles.append(torch.acos(torch.clip(cos_ang, -1.0, 1.0)))
 
-            cos_angs = torch.stack(cos_angs, dim=1)
-            angle_restriction_reward = torch.mean(torch.exp(-5.0 * (1 - cos_angs) / 2), dim=1)
+            angles = torch.stack(angles, dim=1)
+            angle_restriction_reward = torch.mean(torch.exp(-self.cfg.angle_restriction_scale * angles / math.pi), dim=1)
         else:
             angle_restriction_reward = torch.zeros(self.num_envs, device=self.device)
 
@@ -328,12 +341,13 @@ class QuadcopterEnv(DirectRLEnv):
         action_temporal_smoothness_reward = torch.zeros(self.num_envs, device=self.device)
         if hasattr(self, "prev_waypoints"):
             waypoint_diff = torch.linalg.norm(self.waypoints - self.prev_waypoints, dim=1)
-            action_temporal_smoothness_reward = torch.exp(-0.5 * waypoint_diff)
+            action_temporal_smoothness_reward = torch.exp(-self.cfg.action_temporal_smoothness_scale * waypoint_diff)
         self.prev_waypoints = self.waypoints.clone()
 
         reward = {
             "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
             "tail_wp_dist_to_goal": tail_wp_dist_to_goal_reward * self.cfg.tail_wp_dist_to_goal_reward_weight * self.step_dt,
+            "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
             "dist_btw_wps_uniformity": dist_btw_wps_uniformity_reward * self.cfg.dist_btw_wps_uniformity_reward_weight * self.step_dt,
             "angle_restriction": angle_restriction_reward * self.cfg.angle_restriction_reward_weight * self.step_dt,
             "action_temporal_smoothness": action_temporal_smoothness_reward * self.cfg.action_temporal_smoothness_reward_weight * self.step_dt,

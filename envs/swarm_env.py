@@ -51,9 +51,18 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     viewer = ViewerCfg(eye=(-10.0, -10.0, 4.0))
 
     # Reward weights
-    dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
-    tail_wp_dist_to_goal_reward_weight = 0.0  # Reward for tail waypoints to approach the goal
+    dist_to_goal_reward_weight = 2.0  # Reward for approaching the goal
+    tail_wp_dist_to_goal_reward_weight = 1.0  # Reward for tail waypoints to approach the goal
+    success_reward_weight = 10.0  # Additional reward while reaching goal
     mutual_collision_avoidance_reward_weight = 1.0  # Reward for mutual collision avoidance between drones
+
+    # Reward scaling factors
+    dist_to_goal_scale = 0.3  # Exponential decay factor for distance to goal
+    tail_wp_dist_to_goal_scale = 0.3  # Exponential decay factor for tail waypoints distance to goal
+
+    success_distance_threshold = 1.5  # Distance threshold for considering goal reached
+    safe_dist = 1.3
+    critical_dist = 0.5
 
     # Env
     episode_length_s = 13.0
@@ -218,7 +227,9 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             inner_pts_all.append(inner_pts)
 
             # Tail states, transformed to world frame
-            self.p_tail[agent] = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
+            self.p_tail[agent] = (
+                quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
+            )
             v_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max[agent])
             a_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max[agent])
             tail_pva = torch.stack([self.p_tail[agent], v_tail, a_tail], dim=2)
@@ -297,28 +308,30 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         rewards = {}
 
-        safe_dist = 1.3
         mutual_collision_avoidance_reward = torch.zeros(self.num_envs, device=self.device)
         for i, agent_i in enumerate(self.possible_agents):
             for _, agent_j in enumerate(self.possible_agents[i + 1 :], i + 1):
                 dist_btw_drones = torch.linalg.norm(self.robots[agent_i].data.root_pos_w - self.robots[agent_j].data.root_pos_w, dim=1)
 
-                unsafe_idx = dist_btw_drones < safe_dist
+                unsafe_idx = dist_btw_drones < self.cfg.safe_dist
                 if unsafe_idx.any():
                     unsafe_dist = dist_btw_drones[unsafe_idx]
-                    collision_penalty = 5.0 * (1 / unsafe_dist - 1 / safe_dist)
+                    collision_penalty = 1 / (unsafe_dist - self.cfg.critical_dist) - 1 / (self.cfg.safe_dist - self.cfg.critical_dist)
                     mutual_collision_avoidance_reward[unsafe_idx] -= collision_penalty
 
         for agent in self.possible_agents:
             dist_to_goal = torch.linalg.norm(self.desired_position - self.robots[agent].data.root_pos_w, dim=1)
-            dist_to_goal_reward = torch.exp(-1.0 * dist_to_goal)
-            
+            dist_to_goal_reward = torch.exp(-self.cfg.dist_to_goal_scale * dist_to_goal)
+
             tail_wp_dist_to_goal = torch.linalg.norm(self.desired_position - self.p_tail[agent], dim=1)
-            tail_wp_dist_to_goal_reward = torch.exp(-1.0 * tail_wp_dist_to_goal)
+            tail_wp_dist_to_goal_reward = torch.exp(-self.cfg.tail_wp_dist_to_goal_scale * tail_wp_dist_to_goal)
+            
+            success_reward = torch.where(dist_to_goal < self.cfg.success_distance_threshold, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
 
             reward = {
                 "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
                 "tail_wp_dist_to_goal": tail_wp_dist_to_goal_reward * self.cfg.tail_wp_dist_to_goal_reward_weight * self.step_dt,
+                "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
                 "mutual_collision_avoidance": mutual_collision_avoidance_reward / self.cfg.num_drones * self.cfg.mutual_collision_avoidance_reward_weight * self.step_dt,
             }
             reward = torch.sum(torch.stack(list(reward.values())), dim=0)
