@@ -21,7 +21,7 @@ parser.add_argument(
     default=None,
     help="Name of the task. Optional Includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0.",
 )
-parser.add_argument("--num_envs", type=int, default=4096, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=8192, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
@@ -72,9 +72,10 @@ from stable_baselines3.common.vec_env import VecNormalize
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, DirectRLEnvCfg, multi_agent_to_single_agent
 from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.sb3 import Sb3VecEnvWrapper, process_sb3_cfg
-import isaaclab_tasks  # noqa: F401
-from envs import quadcopter_env, camera_env, swarm_env
 from isaaclab_tasks.utils.hydra import hydra_task_config
+
+from policy import DistributedActorCentralizedCriticPolicy
+from envs import quadcopter_env, camera_env, swarm_env
 
 
 @hydra_task_config(args_cli.task, "sb3_cfg_entry_point")
@@ -112,7 +113,6 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
 
     # Post-process agent configuration
     agent_cfg = process_sb3_cfg(agent_cfg)
-    policy_arch = agent_cfg.pop("policy")
     n_timesteps = agent_cfg.pop("n_timesteps")
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -147,7 +147,12 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     if args_cli.pretrained_model:
         agent = PPO.load(args_cli.pretrained_model, env=env, device=agent_cfg["device"])
     else:
-        agent = PPO(policy_arch, env, verbose=2, **agent_cfg)
+        if args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
+            agent_cfg["policy_kwargs"]["num_agents"] = env_cfg.num_drones
+            agent = PPO(DistributedActorCentralizedCriticPolicy, env, verbose=2, **agent_cfg)
+        else:
+            policy_arch = agent_cfg.pop("policy")
+            agent = PPO(policy_arch, env, verbose=2, **agent_cfg)
 
     new_logger = configure(log_dir, ["stdout", "tensorboard"])
     agent.set_logger(new_logger)

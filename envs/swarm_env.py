@@ -25,47 +25,29 @@ from utils.minco import MinJerkOpt
 from utils.controller import Controller
 
 
-class QuadcopterEnvWindow(BaseEnvWindow):
-    """Window manager for the Quadcopter environment"""
-
-    def __init__(self, env: QuadcopterSwarmEnv, window_name: str = "IsaacLab"):
-        """Initialize the window
-
-        Args:
-            env: The environment object
-            window_name: The name of the window. Defaults to "IsaacLab"
-        """
-        # Initialize base window
-        super().__init__(env, window_name)
-        # Add custom UI elements
-        with self.ui_window_elements["main_vstack"]:
-            with self.ui_window_elements["debug_frame"]:
-                with self.ui_window_elements["debug_vstack"]:
-                    # Add command manager visualization
-                    self._create_debug_vis_ui_element("targets", self.env)
-
-
 @configclass
 class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-10.0, -10.0, 4.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 20.0))
 
     # Reward weights
-    dist_to_goal_reward_weight = 2.0  # Reward for approaching the goal
-    tail_wp_dist_to_goal_reward_weight = 1.0  # Reward for tail waypoints to approach the goal
+    dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
+    tail_wp_dist_to_goal_reward_weight = 0.0  # Reward for tail waypoints to approach the goal
     success_reward_weight = 10.0  # Additional reward while reaching goal
+    time_penalty_weight = 0.2  # Penalty for time spent in each step
+    speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_max
     mutual_collision_avoidance_reward_weight = 1.0  # Reward for mutual collision avoidance between drones
 
-    # Reward scaling factors
-    dist_to_goal_scale = 0.3  # Exponential decay factor for distance to goal
-    tail_wp_dist_to_goal_scale = 0.3  # Exponential decay factor for tail waypoints distance to goal
+    dist_to_goal_scale = 0.5  # Exponential decay factor for distance to goal
+    tail_wp_dist_to_goal_scale = 0.5  # Exponential decay factor for tail waypoints distance to goal
+    speed_deviation_tolerance = 0.5  # Tolerance for deviation from v_max
 
     success_distance_threshold = 1.5  # Distance threshold for considering goal reached
     safe_dist = 1.3
     critical_dist = 0.5
 
     # Env
-    episode_length_s = 13.0
+    episode_length_s = 20.0
     physics_freq = 200
     control_freq = 100
     mpc_freq = 10
@@ -91,8 +73,6 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     action_spaces = {agent: 3 * (6 + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
 
     clip_action = 100  # Default bound for box action spaces in IsaacLab Sb3VecEnvWrapper
-
-    ui_window_class_type = QuadcopterEnvWindow
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -121,7 +101,7 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=5, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=13, replicate_physics=True)
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
@@ -147,6 +127,10 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         # Goal position
         self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
+        self.desired_position[:, :2] = torch.zeros_like(self.desired_position[:, :2]).uniform_(0.0, 10.0)
+        self.desired_position[:, :2] += self.terrain.env_origins[:, :2]
+        self.desired_position[:, 2] = torch.zeros_like(self.desired_position[:, 2]).uniform_(1.0, 1.3)
+        self.reset_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Get specific body indices for each drone
         self.body_ids = {agent: self.robots[agent].find_bodies("body")[0] for agent in self.cfg.possible_agents}
@@ -162,7 +146,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         # Controllers
         self.actions, self.a_desired_total, self.thrust_desired, self._thrust_desired, self.q_desired, self.w_desired, self.m_desired = {}, {}, {}, {}, {}, {}, {}
         self.controllers = {
-            agent: Controller(self.step_dt, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device))
+            agent: Controller(1 / self.cfg.control_freq, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device))
             for agent in self.cfg.possible_agents
         }
         self.control_counter = 0
@@ -303,6 +287,15 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                 dim=-1,
             )
             observations[agent] = obs
+            
+        self.reset_goal_timer += self.step_dt
+        reset_goal_idx = self.reset_goal_timer > 3.0
+        if reset_goal_idx.any():
+            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(0.0, 10.0)
+            self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
+            self.desired_position[reset_goal_idx, 2] = torch.zeros_like(self.desired_position[reset_goal_idx, 2]).uniform_(1.0, 1.3)
+            self.reset_goal_timer[reset_goal_idx] = 0.0
+        
         return observations
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
@@ -316,7 +309,17 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                 unsafe_idx = dist_btw_drones < self.cfg.safe_dist
                 if unsafe_idx.any():
                     unsafe_dist = dist_btw_drones[unsafe_idx]
-                    collision_penalty = 1 / (unsafe_dist - self.cfg.critical_dist) - 1 / (self.cfg.safe_dist - self.cfg.critical_dist)
+
+                    critical_idx = unsafe_dist <= self.cfg.critical_dist
+                    noncritical_idx = ~critical_idx
+
+                    collision_penalty = torch.zeros_like(unsafe_dist)
+                    if critical_idx.any():
+                        collision_penalty[critical_idx] = 1000.0
+                    if noncritical_idx.any():
+                        noncritical_dist = unsafe_dist[noncritical_idx]
+                        collision_penalty[noncritical_idx] = 1 / (noncritical_dist - self.cfg.critical_dist) - 1 / (self.cfg.safe_dist - self.cfg.critical_dist)
+
                     mutual_collision_avoidance_reward[unsafe_idx] -= collision_penalty
 
         for agent in self.possible_agents:
@@ -325,13 +328,24 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
             tail_wp_dist_to_goal = torch.linalg.norm(self.desired_position - self.p_tail[agent], dim=1)
             tail_wp_dist_to_goal_reward = torch.exp(-self.cfg.tail_wp_dist_to_goal_scale * tail_wp_dist_to_goal)
-            
-            success_reward = torch.where(dist_to_goal < self.cfg.success_distance_threshold, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
+
+            success = dist_to_goal < self.cfg.success_distance_threshold
+            unsuccess = ~success
+            # Additional reward when the drone is close to goal
+            success_reward = torch.where(success, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
+            # Time penalty for not reaching the goal
+            time_penalty = torch.where(unsuccess, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
+
+            # Reward for maintaining speed close to v_max
+            v_curr = torch.linalg.norm(self.robots[agent].data.root_lin_vel_w, dim=1)
+            speed_maintenance_reward = torch.exp(-((torch.abs(v_curr - self.cfg.v_max[agent]) / self.cfg.speed_deviation_tolerance) ** 2))
 
             reward = {
                 "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
                 "tail_wp_dist_to_goal": tail_wp_dist_to_goal_reward * self.cfg.tail_wp_dist_to_goal_reward_weight * self.step_dt,
                 "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
+                "time_penalty": -time_penalty * self.cfg.time_penalty_weight * self.step_dt,
+                "speed_maintenance": speed_maintenance_reward * self.cfg.speed_maintenance_reward_weight * self.step_dt,
                 "mutual_collision_avoidance": mutual_collision_avoidance_reward / self.cfg.num_drones * self.cfg.mutual_collision_avoidance_reward_weight * self.step_dt,
             }
             reward = torch.sum(torch.stack(list(reward.values())), dim=0)
@@ -362,7 +376,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             self.robots[agent].reset(env_ids)
 
         super()._reset_idx(env_ids)
-        if len(env_ids) == self.num_envs:
+        if self.num_envs > 13 and len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
@@ -372,6 +386,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(0.0, 10.0)
         self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
         self.desired_position[env_ids, 2] = torch.zeros_like(self.desired_position[env_ids, 2]).uniform_(1.0, 1.3)
+        self.reset_goal_timer[env_ids] = 0.0
 
         # Reset robot state
         for agent in self.possible_agents:

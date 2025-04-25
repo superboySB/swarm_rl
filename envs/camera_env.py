@@ -49,7 +49,7 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 @configclass
 class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-5.0, -5.0, 4.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 23.0))
 
     # Env
     physics_freq = 200
@@ -182,7 +182,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
         self.has_prev_traj = torch.tensor([False] * self.num_envs, device=self.device)
 
         # Controller
-        self.controller = Controller(self.step_dt, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device))
+        self.controller = Controller(1 / self.cfg.control_freq, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device))
         self.control_counter = 0
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
@@ -353,7 +353,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
         self.robot.reset(env_ids)
         super()._reset_idx(env_ids)
-        if len(env_ids) == self.num_envs:
+        if self.num_envs > 13 and len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
