@@ -93,7 +93,7 @@ from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, parse_env_cfg
 
-from envs import quadcopter_env, camera_env, swarm_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_env
 
 # Config shortcuts
 algorithm = args_cli.algorithm.lower()

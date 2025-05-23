@@ -11,7 +11,7 @@ import isaacsim.core.utils.prims as prim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg, ViewerCfg
 from isaaclab.sensors import TiledCamera, TiledCameraCfg, save_images_to_file
-from isaaclab.markers import VisualizationMarkers
+from isaaclab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
@@ -26,7 +26,7 @@ from utils.controller import Controller
 
 
 @configclass
-class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
+class QuadcopterRGBCameraWaypointEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
@@ -38,14 +38,13 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     control_decimation = physics_freq // control_freq
     decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     state_space = 0
-    debug_vis = False
 
     # MINCO trajectory
-    num_pieces = 6
-    duration = 0.3
+    num_pieces = 1
+    duration = 0.5
     a_max = 10.0
     v_max = 3.0
-    p_max = num_pieces * v_max * duration
+    p_max = 1.0
     action_space = 3 * (num_pieces + 2)  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
     clip_action = 1.0
 
@@ -76,7 +75,7 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=256, env_spacing=5, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=100, env_spacing=5, replicate_physics=True)
 
     # Robot
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -102,9 +101,13 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     observation_space = [tiled_camera.height, tiled_camera.width, 3]
     write_image_to_file = False
 
+    # Debug visualization
+    debug_vis = True
+    debug_vis_action = True
+    debug_vis_traj = True
 
 @configclass
-class QuadcopterDepthCameraEnvCfg(QuadcopterRGBCameraEnvCfg):
+class QuadcopterDepthCameraWaypointEnvCfg(QuadcopterRGBCameraWaypointEnvCfg):
     # Camera
     max_depth = 10.0
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -123,10 +126,10 @@ class QuadcopterDepthCameraEnvCfg(QuadcopterRGBCameraEnvCfg):
     observation_space = [tiled_camera.height, tiled_camera.width, 1]
 
 
-class QuadcopterCameraEnv(DirectRLEnv):
-    cfg: QuadcopterRGBCameraEnvCfg | QuadcopterDepthCameraEnvCfg
+class QuadcopterCameraWaypointEnv(DirectRLEnv):
+    cfg: QuadcopterRGBCameraWaypointEnvCfg | QuadcopterDepthCameraWaypointEnvCfg
 
-    def __init__(self, cfg: QuadcopterRGBCameraEnvCfg | QuadcopterDepthCameraEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: QuadcopterRGBCameraWaypointEnvCfg | QuadcopterDepthCameraWaypointEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
@@ -153,6 +156,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
+        self.visualize_new_cmd = False
 
         if len(self.cfg.tiled_camera.data_types) != 1:
             raise ValueError(
@@ -181,7 +185,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
         # FIXME: Bugs while using relative path of USD files
         cfg_black_oak = sim_utils.UsdFileCfg(usd_path="/home/laji/Wss/e2e_swarm/swarm_rl/assets/black_oak_fall/Black_Oak_Fall.usd", scale=(0.008, 0.008, 0.008))
-        cfg_black_oak.func("/World/Objects/Black_Oak", cfg_black_oak, translation=(8.0, 0.0, 0.1))
+        cfg_black_oak.func("/World/Objects/Black_Oak", cfg_black_oak, translation=(13.0, 0.0, 0.1))
 
     def _pre_physics_step(self, actions: torch.Tensor):
         # Action parametrization: waypoints in body frame
@@ -217,17 +221,21 @@ class QuadcopterCameraEnv(DirectRLEnv):
         start = time.perf_counter()
         MJO.generate(inner_pts, durations)
         end = time.perf_counter()
-        logger.debug(f"Local trajectory generation takes {end - start:.6f}s")
+        logger.trace(f"Local trajectory generation takes {end - start:.5f}s")
 
         self.traj = MJO.get_traj()
         self.execution_time = torch.zeros(self.num_envs, device=self.device)
         self.has_prev_traj.fill_(True)
 
+        self.p_odom_for_vis = self.robot.data.root_state_w[:, :3].clone()
+        self.q_odom_for_vis = self.robot.data.root_state_w[:, 3:7].clone()
+        self.visualize_new_cmd = True
+
     def _apply_action(self):
         if self.control_counter % self.cfg.control_decimation == 0:
             self.actions = torch.cat(
                 (
-                    self.traj.get_pos(self.execution_time) + self.terrain.env_origins,
+                    self.traj.get_pos(self.execution_time),
                     self.traj.get_vel(self.execution_time),
                     self.traj.get_acc(self.execution_time),
                     self.traj.get_jer(self.execution_time),
@@ -242,7 +250,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
                 self.robot.data.root_state_w, self.actions
             )
             end = time.perf_counter()
-            logger.debug(f"get_control takes {end - start:.6f}s")
+            logger.trace(f"get_control takes {end - start:.5f}s")
 
             self._thrust_desired = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired.unsqueeze(1)), dim=1)
 
@@ -280,7 +288,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
         return torch.zeros(self.num_envs, device=self.device)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 10.0)
+        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 2.0)
         ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
         died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
@@ -312,34 +320,66 @@ class QuadcopterCameraEnv(DirectRLEnv):
         self.controller.reset(env_ids)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
-        # Create markers if necessary for the first time
         if debug_vis:
-            if not hasattr(self, "goal_pos_visualizer"):
-                marker_cfg = CUBOID_MARKER_CFG.copy()
-                marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
-                marker_cfg.prim_path = "/Visuals/Command/goal_position"
-                self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
-            # Set their visibility to true
-            self.goal_pos_visualizer.set_visibility(True)
-        else:
-            if hasattr(self, "goal_pos_visualizer"):
-                self.goal_pos_visualizer.set_visibility(False)
+            if self.cfg.debug_vis_action:
+                if not hasattr(self, "waypoint_visualizers"):
+                    self.waypoint_visualizers = []
+                    r_min, r_max = 0.01, 0.035
+                    color_s, color_e = (1.0, 0.0, 0.0), (0.1, 0.0, 0.0)
+                    for i in range(self.cfg.num_pieces):
+                        ratio = i / max(self.cfg.num_pieces - 1, 1)
+                        r = r_min + (r_max - r_min) * ratio
+                        c = (
+                            color_s[0] + (color_e[0] - color_s[0]) * ratio,
+                            color_s[1] + (color_e[1] - color_s[1]) * ratio,
+                            color_s[2] + (color_e[2] - color_s[2]) * ratio,
+                        )
+                        marker_cfg = VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/Command/waypoint_{i}",
+                            markers={"sphere": sim_utils.SphereCfg(radius=r, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=c))},
+                        )
+                        self.waypoint_visualizers.append(VisualizationMarkers(marker_cfg))
+                        self.waypoint_visualizers[i].set_visibility(True)
+
+            if self.cfg.debug_vis_traj:
+                if not hasattr(self, "traj_visualizers"):
+                    self.traj_visualizers = []
+                    self.resolution = 100
+                    for i in range(self.cfg.num_pieces * self.resolution):
+                        marker_cfg = VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/Command/traj_pt_{i}",
+                            markers={"sphere": sim_utils.SphereCfg(radius=0.005, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.1, 1.0)))},
+                        )
+                        self.traj_visualizers.append(VisualizationMarkers(marker_cfg))
+                        self.traj_visualizers[i].set_visibility(True)
 
     def _debug_vis_callback(self, event):
-        # Update the markers
-        self.goal_pos_visualizer.visualize(self.desired_position)
+        if self.visualize_new_cmd:
+            if hasattr(self, "waypoint_visualizers"):
+                for i in range(self.cfg.num_pieces):
+                    waypoint_world = quat_rotate(self.q_odom_for_vis, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + self.p_odom_for_vis
+                    self.waypoint_visualizers[i].visualize(translations=waypoint_world)
+
+            if hasattr(self, "traj_visualizers"):
+                traj_dur = self.traj.get_total_duration()
+                resolution = traj_dur / (self.cfg.num_pieces * self.resolution)
+                for i in range(self.cfg.num_pieces * self.resolution):
+                    traj_pt_world = self.traj.get_pos(i * resolution)
+                    self.traj_visualizers[i].visualize(translations=traj_pt_world)
+
+            self.visualize_new_cmd = False
 
 
 gym.register(
     id="FAST-Quadcopter-RGB-Camera-v0",
-    entry_point=QuadcopterCameraEnv,
+    entry_point=QuadcopterCameraWaypointEnv,
     disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": QuadcopterRGBCameraEnvCfg},
+    kwargs={"env_cfg_entry_point": QuadcopterRGBCameraWaypointEnvCfg},
 )
 
 gym.register(
     id="FAST-Quadcopter-Depth-Camera-v0",
-    entry_point=QuadcopterCameraEnv,
+    entry_point=QuadcopterCameraWaypointEnv,
     disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": QuadcopterDepthCameraEnvCfg},
+    kwargs={"env_cfg_entry_point": QuadcopterDepthCameraWaypointEnvCfg},
 )

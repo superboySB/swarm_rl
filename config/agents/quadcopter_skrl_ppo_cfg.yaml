@@ -40,7 +40,8 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
   class: PPO
-  rollouts: 160
+  # rollouts: 100  # 10s for waypoint env
+  rollouts: 500  # 10s for bodyrate env
   learning_epochs: 5
   mini_batches: 2
   discount_factor: 0.99

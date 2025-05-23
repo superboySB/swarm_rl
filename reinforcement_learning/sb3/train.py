@@ -77,7 +77,7 @@ from isaaclab_rl.sb3 import Sb3VecEnvWrapper, process_sb3_cfg
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 from policy import DistributedActorCentralizedCriticPolicy
-from envs import quadcopter_env, camera_env, swarm_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_env
 
 
 @hydra_task_config(args_cli.task, "sb3_cfg_entry_point")
@@ -106,7 +106,7 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     env_dir = os.path.join(os.path.dirname(__file__), "../../", "envs")
     dump_env_src_dir = os.path.join(log_dir, "src")
     os.makedirs(dump_env_src_dir, exist_ok=True)
-    if args_cli.task == "FAST-Quadcopter-Direct-v0":
+    if args_cli.task in ["FAST-Quadcopter-Waypoint-v0", "FAST-Quadcopter-Bodyrate-v0"]:
         env_src_file = "quadcopter_env.py"
     elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
         env_src_file = "camera_env.py"

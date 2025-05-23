@@ -50,7 +50,7 @@ import rclpy
 import time
 import torch
 
-from envs import quadcopter_env, camera_env, swarm_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_env
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate
 from utils.minco import MinJerkOpt
@@ -75,7 +75,7 @@ def generate_eight_trajectory(p_odom, v_odom, a_odom, p_init):
     start = time.perf_counter()
     MJO.generate(inner_pts, durations)
     end = time.perf_counter()
-    logger.debug(f"Eight trajectory generation takes {end - start:.6f}s")
+    logger.trace(f"Eight trajectory generation takes {end - start:.5f}s")
 
     return MJO.get_traj()
 

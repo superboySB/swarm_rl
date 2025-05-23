@@ -91,7 +91,7 @@ from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-from envs import quadcopter_env, camera_env, swarm_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_env
 
 # Config shortcuts
 algorithm = args_cli.algorithm.lower()

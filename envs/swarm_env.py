@@ -244,7 +244,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         start = time.perf_counter()
         MJO.generate(inner_pts_all, durations_all)
         end = time.perf_counter()
-        logger.debug(f"Local trajectories generation takes {end - start:.6f}s")
+        logger.trace(f"Local trajectories generation takes {end - start:.5f}s")
 
         traj_all = MJO.get_traj()
         self.trajs = {agent: traj_all[i * self.num_envs : (i + 1) * self.num_envs] for i, agent in enumerate(self.possible_agents)}
@@ -278,7 +278,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                 self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
 
             end = time.perf_counter()
-            logger.debug(f"get_control for all drones takes {end - start:.6f}s")
+            logger.debug(f"get_control for all drones takes {end - start:.5f}s")
 
             self.control_counter = 0
         self.control_counter += 1

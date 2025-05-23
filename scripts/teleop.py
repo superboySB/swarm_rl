@@ -31,7 +31,6 @@ elif args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
     raise ValueError("FAST-Quadcopter-Swarm-Direct-v0 is not supported for keyboard teleoperation #^#")
 elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
     args_cli.enable_cameras = True
-    args_cli.enable_cameras = True
 elif args_cli.task != "FAST-Quadcopter-Waypoint-v0":
     raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0.")
 
@@ -51,7 +50,7 @@ import numpy as np
 import rclpy
 import torch
 
-from envs import quadcopter_env, camera_env, swarm_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate

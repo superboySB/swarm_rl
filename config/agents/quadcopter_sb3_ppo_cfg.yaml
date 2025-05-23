@@ -3,15 +3,16 @@ seed: 42
 
 policy: 'MlpPolicy'
 policy_kwargs: "dict(
-                    log_std_init=-2.302585093,
+                    log_std_init=0.0,
                     ortho_init=False,
                     activation_fn=nn.ReLU,
                     net_arch=dict(pi=[1024, 512], vf=[1024, 512]),
                 )"
 device: "cpu"
 n_timesteps: !!float 1e8
-batch_size: 150000  # batch_size = (n_envs * n_steps) / 4 <-- from Lao Yuan ^-^
-n_steps: 30
+batch_size: 125000  # batch_size = (n_envs * n_steps) / 4 <-- from Lao Yuan ^-^
+# n_steps: 100  # 10s for waypoint env
+n_steps: 500  # 10s for bodyrate env
 gamma: 0.99
 learning_rate: !!float 1e-4
 # ent_coef: 0.0
