@@ -3,6 +3,7 @@ from __future__ import annotations
 import gymnasium as gym
 from loguru import logger
 import math
+import os
 import time
 import torch
 
@@ -26,7 +27,7 @@ from utils.controller import Controller
 
 
 @configclass
-class QuadcopterRGBCameraWaypointEnvCfg(DirectRLEnvCfg):
+class RGBWaypointEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
@@ -106,8 +107,9 @@ class QuadcopterRGBCameraWaypointEnvCfg(DirectRLEnvCfg):
     debug_vis_action = True
     debug_vis_traj = True
 
+
 @configclass
-class QuadcopterDepthCameraWaypointEnvCfg(QuadcopterRGBCameraWaypointEnvCfg):
+class DepthWaypointEnvCfg(RGBWaypointEnvCfg):
     # Camera
     max_depth = 10.0
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -126,10 +128,10 @@ class QuadcopterDepthCameraWaypointEnvCfg(QuadcopterRGBCameraWaypointEnvCfg):
     observation_space = [tiled_camera.height, tiled_camera.width, 1]
 
 
-class QuadcopterCameraWaypointEnv(DirectRLEnv):
-    cfg: QuadcopterRGBCameraWaypointEnvCfg | QuadcopterDepthCameraWaypointEnvCfg
+class CameraWaypointEnv(DirectRLEnv):
+    cfg: RGBWaypointEnvCfg | DepthWaypointEnvCfg
 
-    def __init__(self, cfg: QuadcopterRGBCameraWaypointEnvCfg | QuadcopterDepthCameraWaypointEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: RGBWaypointEnvCfg | DepthWaypointEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
@@ -140,7 +142,6 @@ class QuadcopterCameraWaypointEnv(DirectRLEnv):
 
         # Get specific indices
         self.body_id = self.robot.find_bodies("body")[0]
-        self.joint_id = self.robot.find_joints(".*joint")[0]
 
         self.robot_mass = self.robot.root_physx_view.get_masses()[0, 0]
         self.robot_inertia = self.robot.root_physx_view.get_inertias()[0, 0]
@@ -183,8 +184,7 @@ class QuadcopterCameraWaypointEnv(DirectRLEnv):
 
         prim_utils.create_prim("/World/Objects", "Xform")
 
-        # FIXME: Bugs while using relative path of USD files
-        cfg_black_oak = sim_utils.UsdFileCfg(usd_path="/home/laji/Wss/e2e_swarm/swarm_rl/assets/black_oak_fall/Black_Oak_Fall.usd", scale=(0.008, 0.008, 0.008))
+        cfg_black_oak = sim_utils.UsdFileCfg(usd_path=os.path.join(os.path.dirname(__file__), "../assets/black_oak_fall/Black_Oak_Fall.usd"), scale=(0.008, 0.008, 0.008))
         cfg_black_oak.func("/World/Objects/Black_Oak", cfg_black_oak, translation=(13.0, 0.0, 0.1))
 
     def _pre_physics_step(self, actions: torch.Tensor):
@@ -371,15 +371,15 @@ class QuadcopterCameraWaypointEnv(DirectRLEnv):
 
 
 gym.register(
-    id="FAST-Quadcopter-RGB-Camera-v0",
-    entry_point=QuadcopterCameraWaypointEnv,
+    id="FAST-RGB-Waypoint",
+    entry_point=CameraWaypointEnv,
     disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": QuadcopterRGBCameraWaypointEnvCfg},
+    kwargs={"env_cfg_entry_point": RGBWaypointEnvCfg},
 )
 
 gym.register(
-    id="FAST-Quadcopter-Depth-Camera-v0",
-    entry_point=QuadcopterCameraWaypointEnv,
+    id="FAST-Depth-Waypoint",
+    entry_point=CameraWaypointEnv,
     disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": QuadcopterDepthCameraWaypointEnvCfg},
+    kwargs={"env_cfg_entry_point": DepthWaypointEnvCfg},
 )

@@ -13,7 +13,7 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--velocity", type=float, default=5.0, help="Velocity of teleoperation.")
@@ -27,12 +27,12 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
-elif args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
-    raise ValueError("FAST-Quadcopter-Swarm-Direct-v0 is not supported for keyboard teleoperation #^#")
-elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
+elif args_cli.task in ["FAST-Swarm-Bodyrate", "FAST-Swarm-Waypoint"]:
+    raise ValueError("Swarm envs are not supported for keyboard teleoperation due to the observation space limitation of Isaaclab 'multi_agent_to_single_agent' API #^#")
+elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
-elif args_cli.task != "FAST-Quadcopter-Waypoint-v0":
-    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0.")
+elif args_cli.task != "FAST-Quadcopter-Waypoint":
+    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint.")
 
 # Launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -50,7 +50,7 @@ import numpy as np
 import rclpy
 import torch
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_waypoint_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate
@@ -126,7 +126,7 @@ def main():
             delta_pose, _ = teleop_interface.advance()
 
             actions = None
-            if args_cli.task != "FAST-Quadcopter-Swarm-Direct-v0":
+            if args_cli.task != "FAST-Swarm-Waypoint":
                 actions = torch.zeros(env_cfg.action_space, device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1)
                 if p_desired is not None:
                     if delta_pose[0] > 0:
@@ -170,7 +170,7 @@ def main():
                         goal_in_body_frame = quat_rotate(quat_inv(q_odom[drone]), p_desired[drone] - p_odom[drone])
                         norm = goal_in_body_frame.norm(p=2, dim=1, keepdim=True)
                         clip_scale = torch.where(
-                            norm > env_cfg.num_pieces * env_cfg.p_max[drone], env_cfg.num_pieces * env_cfg.p_max / (norm + 1e-6), torch.ones_like(norm)
+                            norm > env_cfg.num_pieces * env_cfg.p_max[drone], env_cfg.num_pieces * env_cfg.p_max[drone] / (norm + 1e-6), torch.ones_like(norm)
                         )
                         goal_in_body_frame *= clip_scale
                         for i in range(env_cfg.num_pieces):
@@ -179,7 +179,7 @@ def main():
             # Apply actions
             obs, _, reset_terminated, reset_time_outs, _ = env.step(actions)
 
-            if args_cli.task != "FAST-Quadcopter-Swarm-Direct-v0":
+            if args_cli.task != "FAST-Swarm-Waypoint":
                 p_odom = obs["odom"][:, :3]
                 q_odom = obs["odom"][:, 3:7]
                 if p_desired is None:
@@ -195,7 +195,7 @@ def main():
                 for drone in env_cfg.possible_agents:
                     p_desired[drone][reset_env_ids] = p_odom[drone][reset_env_ids].clone()
 
-            if args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
+            if args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
                 visualize_images_live(obs["image"].cpu().numpy())
 
     # Close the simulator

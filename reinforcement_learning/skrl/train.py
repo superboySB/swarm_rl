@@ -18,7 +18,7 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-Bodyrate-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0; FAST-Quadcopter-Swarm-Direct-v0.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=10000, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
@@ -42,11 +42,11 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
-elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
+elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
-elif args_cli.task not in ["FAST-Quadcopter-Waypoint-v0", "FAST-Quadcopter-Bodyrate-v0", "FAST-Quadcopter-Swarm-Direct-v0"]:
+elif args_cli.task not in ["FAST-Quadcopter-Bodyrate", "FAST-Quadcopter-Waypoint", "FAST-Swarm-Bodyrate", "FAST-Swarm-Waypoint"]:
     raise ValueError(
-        "Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-Bodyrate-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0; FAST-Quadcopter-Swarm-Direct-v0."
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Waypoint."
     )
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -91,7 +91,7 @@ from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_waypoint_env
 
 # Config shortcuts
 algorithm = args_cli.algorithm.lower()
@@ -144,12 +144,16 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     env_dir = os.path.join(os.path.dirname(__file__), "../../", "envs")
     dump_env_src_dir = os.path.join(log_dir, "src")
     os.makedirs(dump_env_src_dir, exist_ok=True)
-    if args_cli.task in ["FAST-Quadcopter-Waypoint-v0", "FAST-Quadcopter-Bodyrate-v0"]:
-        env_src_file = "quadcopter_env.py"
-    elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
-        env_src_file = "camera_env.py"
-    elif args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
-        env_src_file = "swarm_env.py"
+    if args_cli.task == "FAST-Quadcopter-Bodyrate":
+        env_src_file = "quadcopter_bodyrate_env.py"
+    elif args_cli.task == "FAST-Quadcopter-Waypoint":
+        env_src_file = "quadcopter_waypoint_env.py"
+    elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
+        env_src_file = "camera_waypoint_env.py"
+    elif args_cli.task == "FAST-Swarm-Bodyrate":
+        env_src_file = "swarm_bodyrate_env.py"
+    elif args_cli.task == "FAST-Swarm-Waypoint":
+        env_src_file = "swarm_waypoint_env.py"
     shutil.copy2(os.path.join(env_dir, env_src_file), os.path.join(dump_env_src_dir, env_src_file))
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

@@ -13,7 +13,7 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument(
@@ -26,12 +26,12 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
-elif args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
-    raise ValueError("FAST-Quadcopter-Swarm-Direct-v0 is not supported for eight trajectory generation and tracking #^#")
-elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
+elif args_cli.task in ["FAST-Swarm-Bodyrate", "FAST-Swarm-Waypoint"]:
+    raise ValueError("Swarm envs are not supported for eight trajectory generation and tracking #^#")
+elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
-elif args_cli.task != "FAST-Quadcopter-Waypoint-v0":
-    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0.")
+elif args_cli.task != "FAST-Quadcopter-Waypoint":
+    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint.")
 
 # Launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -50,7 +50,7 @@ import rclpy
 import time
 import torch
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_waypoint_env
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate
 from utils.minco import MinJerkOpt
@@ -190,7 +190,7 @@ def main():
             replan_required = execution_time > 0.77 * traj_dur  # Magical Doncic
             traj_update_required = env_reset | replan_required
 
-            if args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
+            if args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
                 visualize_images_live(obs["image"].cpu().numpy())
 
     # Close the simulator

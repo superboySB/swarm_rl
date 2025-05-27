@@ -161,7 +161,6 @@ class QuadcopterWaypointEnv(DirectRLEnv):
 
         # Get specific indices
         self.body_id = self.robot.find_bodies("body")[0]
-        self.joint_id = self.robot.find_joints(".*joint")[0]
 
         self.robot_mass = self.robot.root_physx_view.get_masses()[0, 0]
         self.robot_inertia = self.robot.root_physx_view.get_inertias()[0, 0]
@@ -649,7 +648,7 @@ from config import agents
 
 
 gym.register(
-    id="FAST-Quadcopter-Waypoint-v0",
+    id="FAST-Quadcopter-Waypoint",
     entry_point=QuadcopterWaypointEnv,
     disable_env_checker=True,
     kwargs={

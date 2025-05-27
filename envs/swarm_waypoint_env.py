@@ -26,7 +26,7 @@ from utils.controller import Controller
 
 
 @configclass
-class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
+class SwarmWaypointEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
@@ -65,17 +65,17 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     state_space = -1
 
     # MINCO trajectory
-    num_pieces = 3
-    duration = 0.3
+    num_pieces = 1
+    duration = 0.5
     a_max = {agent: 10.0 for agent in possible_agents}
     v_max = {agent: 3.0 for agent in possible_agents}
-    p_max = {agent: 0.6 for agent in possible_agents}
+    p_max = {agent: 1.0 for agent in possible_agents}
 
     # FIXME: @configclass doesn't support the following syntax #^#
     # observation_spaces = {agent: 13 + 3 * (num_drones - 1) for agent in possible_agents}
     observation_spaces = {agent: 13 + 3 * (4 - 1) for agent in possible_agents}
     # action_space = {agent: 3 * (num_pieces + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
-    action_spaces = {agent: 3 * (3 + 2) for agent in possible_agents}
+    action_spaces = {agent: 3 * (1 + 2) for agent in possible_agents}
     clip_action = 1.0
 
     # Simulation
@@ -105,7 +105,7 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=13, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1000, env_spacing=10, replicate_physics=True)
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
@@ -115,12 +115,13 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     debug_vis = True
     debug_vis_goal = True
     debug_vis_action = True
+    debug_vis_traj = True
 
 
-class QuadcopterSwarmEnv(DirectMARLEnv):
-    cfg: QuadcopterSwarmEnvCfg
+class SwarmWaypointEnv(DirectMARLEnv):
+    cfg: SwarmWaypointEnvCfg
 
-    def __init__(self, cfg: QuadcopterSwarmEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: SwarmWaypointEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
@@ -278,7 +279,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                 self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
 
             end = time.perf_counter()
-            logger.debug(f"get_control for all drones takes {end - start:.5f}s")
+            logger.trace(f"get_control for all drones takes {end - start:.5f}s")
 
             self.control_counter = 0
         self.control_counter += 1
@@ -474,17 +475,41 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                             self.waypoint_visualizers[agent].append(VisualizationMarkers(marker_cfg))
                             self.waypoint_visualizers[agent][j].set_visibility(True)
 
+            if self.cfg.debug_vis_traj:
+                if not hasattr(self, "traj_visualizers"):
+                    self.traj_visualizers = {}
+                    self.resolution = 100
+                    for i, agent in enumerate(self.possible_agents):
+                        self.traj_visualizers[agent] = []
+                        for j in range(self.cfg.num_pieces * self.resolution):
+                            marker_cfg = VisualizationMarkersCfg(
+                                prim_path=f"/Visuals/Command/Robot_{i}//traj_pt_{j}",
+                                markers={"sphere": sim_utils.SphereCfg(radius=0.005, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.1, 1.0)))},
+                            )
+                            self.traj_visualizers[agent].append(VisualizationMarkers(marker_cfg))
+                            self.traj_visualizers[agent][j].set_visibility(True)
+
     def _debug_vis_callback(self, event):
         if hasattr(self, "goal_pos_visualizer"):
             self.goal_pos_visualizer.visualize(translations=self.desired_position)
 
-        if self.visualize_new_cmd and hasattr(self, "waypoint_visualizers"):
-            for agent in self.possible_agents:
-                for i in range(self.cfg.num_pieces):
-                    waypoint_world = (
-                        quat_rotate(self.q_odom_for_vis[agent], self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + self.p_odom_for_vis[agent]
-                    )
-                    self.waypoint_visualizers[agent][i].visualize(translations=waypoint_world)
+        if self.visualize_new_cmd:
+            if hasattr(self, "waypoint_visualizers"):
+                for agent in self.possible_agents:
+                    for i in range(self.cfg.num_pieces):
+                        waypoint_world = (
+                            quat_rotate(self.q_odom_for_vis[agent], self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + self.p_odom_for_vis[agent]
+                        )
+                        self.waypoint_visualizers[agent][i].visualize(translations=waypoint_world)
+
+            if hasattr(self, "traj_visualizers"):
+                for agent in self.possible_agents:
+                    traj_dur = self.trajs[agent].get_total_duration()
+                    resolution = traj_dur / (self.cfg.num_pieces * self.resolution)
+                    for i in range(self.cfg.num_pieces * self.resolution):
+                        traj_pt_world = self.trajs[agent].get_pos(i * resolution)
+                        self.traj_visualizers[agent][i].visualize(translations=traj_pt_world)
+
             self.visualize_new_cmd = False
 
 
@@ -492,11 +517,11 @@ from config import agents
 
 
 gym.register(
-    id="FAST-Quadcopter-Swarm-Direct-v0",
-    entry_point=QuadcopterSwarmEnv,
+    id="FAST-Swarm-Waypoint",
+    entry_point=SwarmWaypointEnv,
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": QuadcopterSwarmEnvCfg,
+        "env_cfg_entry_point": SwarmWaypointEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:swarm_sb3_ppo_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ppo_cfg.yaml",
         "skrl_ippo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ippo_cfg.yaml",

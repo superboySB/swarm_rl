@@ -139,7 +139,6 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
 
         # Get specific indices
         self.body_id = self.robot.find_bodies("body")[0]
-        self.joint_id = self.robot.find_joints(".*joint")[0]
 
         self.robot_mass = self.robot.root_physx_view.get_masses()[0, 0].to(self.device)
         self.robot_inertia = self.robot.root_physx_view.get_inertias()[0, 0].to(self.device)
@@ -401,7 +400,7 @@ from config import agents
 
 
 gym.register(
-    id="FAST-Quadcopter-Bodyrate-v0",
+    id="FAST-Quadcopter-Bodyrate",
     entry_point=QuadcopterBodyrateEnv,
     disable_env_checker=True,
     kwargs={
