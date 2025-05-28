@@ -16,7 +16,6 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_inv, quat_rotate
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
@@ -72,8 +71,8 @@ class SwarmWaypointEnvCfg(DirectMARLEnvCfg):
     p_max = {agent: 1.0 for agent in possible_agents}
 
     # FIXME: @configclass doesn't support the following syntax #^#
-    # observation_spaces = {agent: 13 + 3 * (num_drones - 1) for agent in possible_agents}
-    observation_spaces = {agent: 13 + 3 * (4 - 1) for agent in possible_agents}
+    # observation_spaces = {agent: 16 + 3 * (num_drones - 1) for agent in possible_agents}
+    observation_spaces = {agent: 16 + 3 * (4 - 1) for agent in possible_agents}
     # action_space = {agent: 3 * (num_pieces + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
     action_spaces = {agent: 3 * (1 + 2) for agent in possible_agents}
     clip_action = 1.0
@@ -131,7 +130,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
             raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
 
         # Goal position
-        self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
+        self.goal = torch.zeros(self.num_envs, 3, device=self.device)
         self.reset_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Get specific body indices for each drone
@@ -157,13 +156,13 @@ class SwarmWaypointEnv(DirectMARLEnv):
 
         self.prev_dist_to_goal = {}
 
-        self.relative_positions = {}
+        self.relative_positions_w = {}
         for i in range(self.cfg.num_drones):
-            self.relative_positions[i] = {}
+            self.relative_positions_w[i] = {}
             for j in range(self.cfg.num_drones):
                 if i == j:
                     continue
-                self.relative_positions[i][j] = torch.zeros(self.num_envs, 3, device=self.device)
+                self.relative_positions_w[i][j] = torch.zeros(self.num_envs, 3, device=self.device)
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
@@ -221,15 +220,13 @@ class SwarmWaypointEnv(DirectMARLEnv):
             inner_pts = torch.zeros((self.num_envs, 3, self.cfg.num_pieces - 1), device=self.device)
             for i in range(self.cfg.num_pieces - 1):
                 # Transform to world frame
-                inner_pts[:, :, i] = quat_rotate(q_odom, self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + p_odom
+                inner_pts[:, :, i] = self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent] + p_odom
             inner_pts_all.append(inner_pts)
 
             # Tail states, transformed to world frame
-            self.p_tail[agent] = (
-                quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
-            )
-            v_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max[agent])
-            a_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max[agent])
+            self.p_tail[agent] = self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent] + p_odom
+            v_tail = self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max[agent]
+            a_tail = self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max[agent]
             tail_pva = torch.stack([self.p_tail[agent], v_tail, a_tail], dim=2)
             tail_pva_all.append(tail_pva)
 
@@ -253,7 +250,6 @@ class SwarmWaypointEnv(DirectMARLEnv):
         self.has_prev_traj.fill_(True)
 
         self.p_odom_for_vis = {agent: self.robots[agent].data.root_state_w[:, :3].clone() for agent in self.possible_agents}
-        self.q_odom_for_vis = {agent: self.robots[agent].data.root_state_w[:, 3:7].clone() for agent in self.possible_agents}
         self.visualize_new_cmd = True
 
     def _apply_action(self) -> None:
@@ -295,7 +291,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
             for j, agent_j in enumerate(self.possible_agents):
                 if i == j:
                     continue
-                self.relative_positions[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
+                self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
@@ -315,13 +311,13 @@ class SwarmWaypointEnv(DirectMARLEnv):
         mutual_collision_avoidance_reward = torch.zeros(self.num_envs, device=self.device)
         for i in range(self.cfg.num_drones):
             for j in range(i + 1, self.cfg.num_drones):
-                dist_btw_drones = torch.linalg.norm(self.relative_positions[i][j], dim=1)
+                dist_btw_drones = torch.linalg.norm(self.relative_positions_w[i][j], dim=1)
 
                 collision_penalty = 1.0 / (1.0 + torch.exp(77 * (dist_btw_drones - self.cfg.safe_dist)))
                 mutual_collision_avoidance_reward -= collision_penalty
 
         for agent in self.possible_agents:
-            dist_to_goal = torch.linalg.norm(self.desired_position - self.robots[agent].data.root_pos_w, dim=1)
+            dist_to_goal = torch.linalg.norm(self.goal - self.robots[agent].data.root_pos_w, dim=1)
             approaching_goal_reward = torch.zeros(self.num_envs, device=self.device)
             if agent in self.prev_dist_to_goal:
                 approaching_goal_reward = self.prev_dist_to_goal[agent] - dist_to_goal
@@ -329,7 +325,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
 
             dist_to_goal_reward = torch.exp(-self.cfg.dist_to_goal_scale * dist_to_goal)
 
-            tail_wp_dist_to_goal = torch.linalg.norm(self.desired_position - self.p_tail[agent], dim=1)
+            tail_wp_dist_to_goal = torch.linalg.norm(self.goal - self.p_tail[agent], dim=1)
             tail_wp_dist_to_goal_reward = torch.exp(-self.cfg.tail_wp_dist_to_goal_scale * tail_wp_dist_to_goal)
 
             success = dist_to_goal < self.cfg.success_distance_threshold
@@ -375,9 +371,9 @@ class SwarmWaypointEnv(DirectMARLEnv):
         self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
-        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-        self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_position[env_ids, 2] = torch.ones_like(self.desired_position[env_ids, 2]) * self.cfg.flight_altitude
+        self.goal[env_ids, :2] = torch.zeros_like(self.goal[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+        self.goal[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
+        self.goal[env_ids, 2] = torch.ones_like(self.goal[env_ids, 2]) * self.cfg.flight_altitude
         self.reset_goal_timer[env_ids] = 0.0
 
         # Reset robot state
@@ -400,41 +396,42 @@ class SwarmWaypointEnv(DirectMARLEnv):
             self.controllers[agent].reset(env_ids)
 
             if agent in self.prev_dist_to_goal:
-                self.prev_dist_to_goal[agent][env_ids] = torch.linalg.norm(self.desired_position[env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
+                self.prev_dist_to_goal[agent][env_ids] = torch.linalg.norm(self.goal[env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
 
         # Update relative positions
         for i, agent_i in enumerate(self.possible_agents):
             for j, agent_j in enumerate(self.possible_agents):
                 if i == j:
                     continue
-                self.relative_positions[i][j][env_ids] = self.robots[agent_j].data.root_pos_w[env_ids] - self.robots[agent_i].data.root_pos_w[env_ids]
+                self.relative_positions_w[i][j][env_ids] = self.robots[agent_j].data.root_pos_w[env_ids] - self.robots[agent_i].data.root_pos_w[env_ids]
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         self.reset_goal_timer += self.step_dt
         reset_goal_idx = self.reset_goal_timer > self.cfg.goal_reset_period
         if reset_goal_idx.any():
-            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-            self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
-            self.desired_position[reset_goal_idx, 2] = torch.ones_like(self.desired_position[reset_goal_idx, 2]) * self.cfg.flight_altitude
+            self.goal[reset_goal_idx, :2] = torch.zeros_like(self.goal[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+            self.goal[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
+            self.goal[reset_goal_idx, 2] = torch.ones_like(self.goal[reset_goal_idx, 2]) * self.cfg.flight_altitude
             self.reset_goal_timer[reset_goal_idx] = 0.0
 
         observations = {}
         for i, agent in enumerate(self.possible_agents):
-            goal_in_body_frame = quat_rotate(quat_inv(self.robots[agent].data.root_quat_w), self.desired_position - self.robots[agent].data.root_pos_w)
+            body2goal_w = self.goal - self.robots[agent].data.root_pos_w
 
-            relative_positions = []
+            relative_positions_w = []
             for j, _ in enumerate(self.possible_agents):
                 if i == j:
                     continue
-                relative_positions.append(self.relative_positions[i][j].clone())
-            relative_positions = torch.cat(relative_positions, dim=-1)
+                relative_positions_w.append(self.relative_positions_w[i][j].clone())
+            relative_positions_w = torch.cat(relative_positions_w, dim=-1)
 
             obs = torch.cat(
                 [
-                    goal_in_body_frame,
+                    body2goal_w,
                     self.robots[agent].data.root_quat_w.clone(),
-                    self.robots[agent].data.root_vel_w.clone(),
-                    relative_positions,
+                    self.robots[agent].data.projected_gravity_b.clone(),
+                    self.robots[agent].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    relative_positions_w,
                 ],
                 dim=-1,
             )
@@ -491,15 +488,13 @@ class SwarmWaypointEnv(DirectMARLEnv):
 
     def _debug_vis_callback(self, event):
         if hasattr(self, "goal_pos_visualizer"):
-            self.goal_pos_visualizer.visualize(translations=self.desired_position)
+            self.goal_pos_visualizer.visualize(translations=self.goal)
 
         if self.visualize_new_cmd:
             if hasattr(self, "waypoint_visualizers"):
                 for agent in self.possible_agents:
                     for i in range(self.cfg.num_pieces):
-                        waypoint_world = (
-                            quat_rotate(self.q_odom_for_vis[agent], self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + self.p_odom_for_vis[agent]
-                        )
+                        waypoint_world = self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent] + self.p_odom_for_vis[agent]
                         self.waypoint_visualizers[agent][i].visualize(translations=waypoint_world)
 
             if hasattr(self, "traj_visualizers"):

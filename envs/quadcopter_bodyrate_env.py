@@ -61,7 +61,7 @@ class QuadcopterBodyrateEnvCfg(DirectRLEnvCfg):
     control_decimation = physics_freq // control_freq
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
-    observation_space = 13
+    observation_space = 16
     state_space = 0
     action_space = 4
     clip_action = 1.0
@@ -117,7 +117,7 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
             raise ValueError("Replan and control decimation must be greater than or equal to 1 #^#")
 
         # Goal position
-        self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
+        self.goal = torch.zeros(self.num_envs, 3, device=self.device)
         self.reset_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Logging
@@ -205,7 +205,7 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
         death_reward = -torch.where(died, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
 
         # Goal reaching reward
-        dist_to_goal = torch.linalg.norm(self.desired_position - self.robot.data.root_pos_w, dim=1)
+        dist_to_goal = torch.linalg.norm(self.goal - self.robot.data.root_pos_w, dim=1)
         approaching_goal_reward = torch.zeros(self.num_envs, device=self.device)
         if hasattr(self, "prev_dist_to_goal"):
             approaching_goal_reward = self.prev_dist_to_goal - dist_to_goal
@@ -279,9 +279,9 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
         # Sample new commands
-        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-        self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_position[env_ids, 2] = torch.ones_like(self.desired_position[env_ids, 2]) * self.cfg.flight_altitude
+        self.goal[env_ids, :2] = torch.zeros_like(self.goal[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+        self.goal[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
+        self.goal[env_ids, 2] = torch.ones_like(self.goal[env_ids, 2]) * self.cfg.flight_altitude
         self.reset_goal_timer[env_ids] = 0.0
 
         # Reset robot state
@@ -294,24 +294,24 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
         if hasattr(self, "prev_dist_to_goal"):
-            self.prev_dist_to_goal[env_ids] = torch.linalg.norm(self.desired_position[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1)
+            self.prev_dist_to_goal[env_ids] = torch.linalg.norm(self.goal[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1)
 
     def _get_observations(self) -> dict:
         self.reset_goal_timer += self.step_dt
         reset_goal_idx = self.reset_goal_timer > self.cfg.goal_reset_period
         if reset_goal_idx.any():
-            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-            self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
-            self.desired_position[reset_goal_idx, 2] = torch.ones_like(self.desired_position[reset_goal_idx, 2]) * self.cfg.flight_altitude
+            self.goal[reset_goal_idx, :2] = torch.zeros_like(self.goal[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+            self.goal[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
+            self.goal[reset_goal_idx, 2] = torch.ones_like(self.goal[reset_goal_idx, 2]) * self.cfg.flight_altitude
             self.reset_goal_timer[reset_goal_idx] = 0.0
 
-        goal_in_body_frame = quat_rotate(quat_inv(self.robot.data.root_quat_w), self.desired_position - self.robot.data.root_pos_w)
+        body2goal_w = self.goal - self.robot.data.root_pos_w
         obs = torch.cat(
             [
-                goal_in_body_frame,
+                body2goal_w,
                 self.robot.data.root_quat_w.clone(),
-                # self.robot.data.projected_gravity_b.clone(),
-                self.robot.data.root_vel_w.clone(),  # TODO: Try to have no velocity observations to reduce sim2real gap
+                self.robot.data.projected_gravity_b.clone(),
+                self.robot.data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
             ],
             dim=-1,
         )
@@ -331,7 +331,7 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
 
     def _debug_vis_callback(self, event):
         if hasattr(self, "goal_pos_visualizer"):
-            self.goal_pos_visualizer.visualize(translations=self.desired_position)
+            self.goal_pos_visualizer.visualize(translations=self.goal)
 
     def _publish_debug_signals(self):
 

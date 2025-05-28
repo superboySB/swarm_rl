@@ -7,7 +7,7 @@ class Trajectory:
         self.num_env, self.N = durations.shape
         self.durations = durations
         self.coeff_mats = coeff_mats
-        
+
     def __getitem__(self, index):
         new_durations = self.durations[index]
         new_coeff_mats = self.coeff_mats[index]

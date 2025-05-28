@@ -17,7 +17,6 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_rotate
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
@@ -196,7 +195,6 @@ class CameraWaypointEnv(DirectRLEnv):
 
         # Head states
         p_odom = self.robot.data.root_state_w[:, :3]
-        q_odom = self.robot.data.root_state_w[:, 3:7]
         v_odom = self.robot.data.root_state_w[:, 7:10]
         a_odom = torch.zeros_like(v_odom)
         if self.traj is not None:
@@ -207,12 +205,12 @@ class CameraWaypointEnv(DirectRLEnv):
         inner_pts = torch.zeros((self.num_envs, 3, self.cfg.num_pieces - 1), device=self.device)
         for i in range(self.cfg.num_pieces - 1):
             # Transform to world frame
-            inner_pts[:, :, i] = quat_rotate(q_odom, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + p_odom
+            inner_pts[:, :, i] = self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max + p_odom
 
         # Tail states, transformed to world frame
-        p_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
-        v_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max)
-        a_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max)
+        p_tail = (self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
+        v_tail = (self.waypoints[:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max)
+        a_tail = (self.waypoints[:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max)
         tail_pva = torch.stack([p_tail, v_tail, a_tail], dim=2)
 
         durations = torch.full((self.num_envs, self.cfg.num_pieces), self.cfg.duration, device=self.device)
@@ -228,7 +226,6 @@ class CameraWaypointEnv(DirectRLEnv):
         self.has_prev_traj.fill_(True)
 
         self.p_odom_for_vis = self.robot.data.root_state_w[:, :3].clone()
-        self.q_odom_for_vis = self.robot.data.root_state_w[:, 3:7].clone()
         self.visualize_new_cmd = True
 
     def _apply_action(self):
@@ -357,7 +354,7 @@ class CameraWaypointEnv(DirectRLEnv):
         if self.visualize_new_cmd:
             if hasattr(self, "waypoint_visualizers"):
                 for i in range(self.cfg.num_pieces):
-                    waypoint_world = quat_rotate(self.q_odom_for_vis, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + self.p_odom_for_vis
+                    waypoint_world = self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max + self.p_odom_for_vis
                     self.waypoint_visualizers[i].visualize(translations=waypoint_world)
 
             if hasattr(self, "traj_visualizers"):
