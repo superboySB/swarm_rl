@@ -442,13 +442,13 @@ class SwarmWaypointEnv(DirectMARLEnv):
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if self.cfg.debug_vis_goal:
-                if not hasattr(self, "goal_pos_visualizer"):
+                if not hasattr(self, "goal_visualizer"):
                     marker_cfg = CUBOID_MARKER_CFG.copy()
                     marker_cfg.markers["cuboid"].size = (0.07, 0.07, 0.07)
                     marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
                     marker_cfg.prim_path = "/Visuals/Command/goal"
-                    self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
-                self.goal_pos_visualizer.set_visibility(True)
+                    self.goal_visualizer = VisualizationMarkers(marker_cfg)
+                    self.goal_visualizer.set_visibility(True)
 
             if self.cfg.debug_vis_action:
                 if not hasattr(self, "waypoint_visualizers"):
@@ -487,8 +487,8 @@ class SwarmWaypointEnv(DirectMARLEnv):
                             self.traj_visualizers[agent][j].set_visibility(True)
 
     def _debug_vis_callback(self, event):
-        if hasattr(self, "goal_pos_visualizer"):
-            self.goal_pos_visualizer.visualize(translations=self.goal)
+        if hasattr(self, "goal_visualizer"):
+            self.goal_visualizer.visualize(translations=self.goal)
 
         if self.visualize_new_cmd:
             if hasattr(self, "waypoint_visualizers"):

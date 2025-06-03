@@ -59,8 +59,7 @@ class QuadcopterWaypointEnvCfg(DirectRLEnvCfg):
     flight_altitude = 1.0  # Desired flight altitude
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     goal_reset_period = 10.0  # Time period for resetting goal
-    expand_goal_range = False
-    goal_range = 5.0  # Range of xy coordinates of the goal
+    goal_range = 10.0  # Range of xy coordinates of the goal
 
     # Env
     episode_length_s = 30.0
@@ -291,9 +290,6 @@ class QuadcopterWaypointEnv(DirectRLEnv):
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        if self.cfg.expand_goal_range and self.cfg.goal_range < 13:
-            self.cfg.goal_range += 1.0 / 10000
-
         return died, time_out
 
     def _get_rewards(self) -> torch.Tensor:
@@ -472,13 +468,13 @@ class QuadcopterWaypointEnv(DirectRLEnv):
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if self.cfg.debug_vis_goal:
-                if not hasattr(self, "goal_pos_visualizer"):
+                if not hasattr(self, "goal_visualizer"):
                     marker_cfg = CUBOID_MARKER_CFG.copy()
                     marker_cfg.markers["cuboid"].size = (0.07, 0.07, 0.07)
                     marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
                     marker_cfg.prim_path = "/Visuals/Command/goal"
-                    self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
-                self.goal_pos_visualizer.set_visibility(True)
+                    self.goal_visualizer = VisualizationMarkers(marker_cfg)
+                    self.goal_visualizer.set_visibility(True)
 
             if self.cfg.debug_vis_action:
                 if not hasattr(self, "waypoint_visualizers"):
@@ -513,8 +509,8 @@ class QuadcopterWaypointEnv(DirectRLEnv):
                         self.traj_visualizers[i].set_visibility(True)
 
     def _debug_vis_callback(self, event):
-        if hasattr(self, "goal_pos_visualizer"):
-            self.goal_pos_visualizer.visualize(translations=self.goal)
+        if hasattr(self, "goal_visualizer"):
+            self.goal_visualizer.visualize(translations=self.goal)
 
         if self.visualize_new_cmd:
             if hasattr(self, "waypoint_visualizers"):
