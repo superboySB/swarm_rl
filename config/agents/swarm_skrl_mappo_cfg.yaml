@@ -24,7 +24,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [1024, 512, 256]
+        layers: [512, 512, 256]
         activations: elu
     output: ONE
 

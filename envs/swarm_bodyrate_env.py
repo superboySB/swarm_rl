@@ -65,7 +65,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
 
     # FIXME: @configclass doesn't support the following syntax #^#
     # observation_spaces = {agent: 16 + 3 * (num_drones - 1) for agent in possible_agents}
-    observation_spaces = {agent: 16 + 3 * (6 - 1) for agent in possible_agents}
+    observation_spaces = {agent: 16 + 3 * (4 - 1) for agent in possible_agents}
 
     v_desired = {agent: 2.0 for agent in possible_agents}
     thrust_to_weight = {agent: 2.0 for agent in possible_agents}
@@ -284,6 +284,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         # Randomly assign missions to reset envs
         self.env_mission_ids[env_ids] = torch.randint(0, len(self.cfg.mission_names), (len(env_ids),), device=self.device)
+        self.env_mission_ids[env_ids] = 1
         mission_0_envs = env_ids[self.env_mission_ids[env_ids] == 0]  # The migration mission
         mission_1_envs = env_ids[self.env_mission_ids[env_ids] == 1]  # The crossover mission
 
@@ -295,7 +296,8 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             random.shuffle(permuted)
         mapping = dict(zip(agents, permuted))
 
-        rand_init_order = list(self.possible_agents)
+        rand_init_ang = torch.rand(len(mission_1_envs), device=self.device)
+        rand_init_order = list(range(len(self.possible_agents)))
         random.shuffle(rand_init_order)
 
         for i, agent in enumerate(self.possible_agents):
@@ -319,9 +321,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 joint_pos = self.robots[agent].data.default_joint_pos[mission_1_envs]
                 joint_vel = self.robots[agent].data.default_joint_vel[mission_1_envs]
 
-                self.ang[agent][mission_1_envs] = (
-                    (torch.rand(len(mission_1_envs), device=self.device) + rand_init_order[i] / self.cfg.num_drones) * 2 * math.pi
-                )  # Start angles
+                self.ang[agent][mission_1_envs] = (rand_init_ang + rand_init_order[i] / self.cfg.num_drones) * 2 * math.pi  # Start angles
                 pos_start = torch.zeros(len(mission_1_envs), 7, device=self.device)
                 pos_start[:, :3] = torch.cat(
                     [
@@ -362,26 +362,27 @@ class SwarmBodyrateEnv(DirectMARLEnv):
     def _get_observations(self) -> dict[str, torch.Tensor]:
         # Reset goal after _get_rewards before _get_observations and _get_states
         self.reset_goal_timer += self.step_dt
-        reset_goal_idx = self.reset_goal_timer > self.cfg.goal_reset_period
-        if reset_goal_idx.any():
+        reset_goal_idx = (self.reset_goal_timer > self.cfg.goal_reset_period).nonzero(as_tuple=False).squeeze(-1)
+        if len(reset_goal_idx) > 0:
             mission_0_envs = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 0]  # The migration mission
             mission_1_envs = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 1]  # The crossover mission
 
-            if len(mission_0_envs) > 0:
-                self.goal[agent][mission_0_envs, :2] = torch.zeros_like(self.goal[agent][mission_0_envs, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-                self.goal[agent][mission_0_envs, :2] += self.terrain.env_origins[mission_0_envs, :2]
-                self.goal[agent][mission_0_envs, 2] = self.cfg.flight_altitude
+            for agent in self.possible_agents:
+                if len(mission_0_envs) > 0:
+                    self.goal[agent][mission_0_envs, :2] = torch.zeros_like(self.goal[agent][mission_0_envs, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+                    self.goal[agent][mission_0_envs, :2] += self.terrain.env_origins[mission_0_envs, :2]
+                    self.goal[agent][mission_0_envs, 2] = self.cfg.flight_altitude
 
-            if len(mission_1_envs) > 0:
-                self.ang[agent][mission_1_envs] += math.pi
-                self.goal[agent][mission_1_envs] = torch.cat(
-                    [
-                        self.terrain.env_origins[mission_1_envs, :2]
-                        + torch.stack([torch.cos(self.ang[agent][mission_1_envs]), torch.sin(self.ang[agent][mission_1_envs])], dim=1) * self.cfg.init_circle_radius,
-                        torch.ones(len(mission_1_envs), 1, device=self.device) * self.cfg.flight_altitude,
-                    ],
-                    dim=1,
-                )
+                if len(mission_1_envs) > 0:
+                    self.ang[agent][mission_1_envs] += math.pi
+                    self.goal[agent][mission_1_envs] = torch.cat(
+                        [
+                            self.terrain.env_origins[mission_1_envs, :2]
+                            + torch.stack([torch.cos(self.ang[agent][mission_1_envs]), torch.sin(self.ang[agent][mission_1_envs])], dim=1) * self.cfg.init_circle_radius,
+                            torch.ones(len(mission_1_envs), 1, device=self.device) * self.cfg.flight_altitude,
+                        ],
+                        dim=1,
+                    )
 
             self.reset_goal_timer[reset_goal_idx] = 0.0
 
