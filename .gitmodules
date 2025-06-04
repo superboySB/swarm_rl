@@ -1,0 +1,3 @@
+[submodule "reinforcement_learning/lib/skrl"]
+	path = reinforcement_learning/lib/skrl
+	url = git@github.com:dungloi/skrl.git

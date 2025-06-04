@@ -43,7 +43,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     rand_init_states = True  # Whether to randomly permute initial states among agents
     success_distance_threshold = 1.0  # Distance threshold for considering goal reached
     safe_dist = 0.5
-    mission_names = ["migration", "crossover"]
+    mission_names = ["migration", "crossover", "chaotic"]
     goal_reset_period = 10.0  # Time period for resetting goal
     goal_range = 10.0  # Range of xy coordinates of the goal
     init_circle_radius = 5.0
@@ -200,8 +200,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             self.robots[agent].set_external_force_and_torque(self.thrusts[agent], self.moments[agent], body_ids=self.body_ids[agent])
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        # For now, the computation of relative positions is best performed at the beginning of _get_dones,
-        # since _get_dones is executed in the 'step' method of DirectMARLEnv immediately after physics stepping.
+        # Update relative positions before _get_rewards
         for i, agent_i in enumerate(self.possible_agents):
             for j, agent_j in enumerate(self.possible_agents):
                 if i == j:
@@ -284,9 +283,10 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         # Randomly assign missions to reset envs
         self.env_mission_ids[env_ids] = torch.randint(0, len(self.cfg.mission_names), (len(env_ids),), device=self.device)
-        self.env_mission_ids[env_ids] = 1
+        self.env_mission_ids[env_ids] = 2
         mission_0_envs = env_ids[self.env_mission_ids[env_ids] == 0]  # The migration mission
         mission_1_envs = env_ids[self.env_mission_ids[env_ids] == 1]  # The crossover mission
+        mission_2_envs = env_ids[self.env_mission_ids[env_ids] == 2]  # The chaotic mission
 
         # Reset robot state
         # Randomly permute initial root and joint states among agents
@@ -301,51 +301,42 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         random.shuffle(rand_init_order)
 
         for i, agent in enumerate(self.possible_agents):
+            init_state = self.robots[agent].data.default_root_state
 
+            # The migration mission: default init states + unified random target
             if len(mission_0_envs) > 0:
                 rand_other_agent = mapping[agent]
-                joint_pos = self.robots[rand_other_agent].data.default_joint_pos[mission_0_envs]
-                joint_vel = self.robots[rand_other_agent].data.default_joint_vel[mission_0_envs]
-                default_root_state = self.robots[rand_other_agent].data.default_root_state[mission_0_envs]
-                default_root_state[:, :3] += self.terrain.env_origins[mission_0_envs]
-
-                self.robots[agent].write_root_pose_to_sim(default_root_state[:, :7], mission_0_envs)
-                self.robots[agent].write_root_velocity_to_sim(default_root_state[:, 7:], mission_0_envs)
-                self.robots[agent].write_joint_state_to_sim(joint_pos, joint_vel, None, mission_0_envs)
+                init_state[mission_0_envs] = self.robots[rand_other_agent].data.default_root_state[mission_0_envs]
 
                 self.goal[agent][mission_0_envs, :2] = torch.zeros_like(self.goal[agent][mission_0_envs, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-                self.goal[agent][mission_0_envs, :2] += self.terrain.env_origins[mission_0_envs, :2]
-                self.goal[agent][mission_0_envs, 2] = self.cfg.flight_altitude
 
+            # The crossover mission: init states uniformly distributed on a circle + target on the opposite side
             if len(mission_1_envs) > 0:
-                joint_pos = self.robots[agent].data.default_joint_pos[mission_1_envs]
-                joint_vel = self.robots[agent].data.default_joint_vel[mission_1_envs]
-
                 self.ang[agent][mission_1_envs] = (rand_init_ang + rand_init_order[i] / self.cfg.num_drones) * 2 * math.pi  # Start angles
-                pos_start = torch.zeros(len(mission_1_envs), 7, device=self.device)
-                pos_start[:, :3] = torch.cat(
-                    [
-                        self.terrain.env_origins[mission_1_envs, :2]
-                        + torch.stack([torch.cos(self.ang[agent][mission_1_envs]), torch.sin(self.ang[agent][mission_1_envs])], dim=1) * self.cfg.init_circle_radius,
-                        torch.ones(len(mission_1_envs), 1, device=self.device) * self.cfg.flight_altitude,
-                    ],
-                    dim=1,
+                init_state[mission_1_envs, :2] = (
+                    torch.stack([torch.cos(self.ang[agent][mission_1_envs]), torch.sin(self.ang[agent][mission_1_envs])], dim=1) * self.cfg.init_circle_radius
                 )
-                pos_start[:, 3] = 1.0
-
-                self.robots[agent].write_root_pose_to_sim(pos_start, mission_1_envs)
-                self.robots[agent].write_root_velocity_to_sim(torch.zeros(len(mission_1_envs), 6, device=self.device), mission_1_envs)
-                self.robots[agent].write_joint_state_to_sim(joint_pos, joint_vel, None, mission_1_envs)
 
                 self.ang[agent][mission_1_envs] += math.pi  # Terminate angles
-                self.goal[agent][mission_1_envs] = torch.cat(
-                    [
-                        self.terrain.env_origins[mission_1_envs, :2]
-                        + torch.stack([torch.cos(self.ang[agent][mission_1_envs]), torch.sin(self.ang[agent][mission_1_envs])], dim=1) * self.cfg.init_circle_radius,
-                        torch.ones(len(mission_1_envs), 1, device=self.device) * self.cfg.flight_altitude,
-                    ],
-                    dim=1,
+                self.goal[agent][mission_1_envs, :2] = (
+                    torch.stack([torch.cos(self.ang[agent][mission_1_envs]), torch.sin(self.ang[agent][mission_1_envs])], dim=1) * self.cfg.init_circle_radius
                 )
+
+            # The chaotic mission: random init states + respective random target
+            if len(mission_2_envs) > 0:
+                init_state[mission_2_envs, :2] = torch.zeros_like(init_state[mission_2_envs, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+
+                self.goal[agent][mission_2_envs, :2] = torch.zeros_like(self.goal[agent][mission_2_envs, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+
+            self.goal[agent][env_ids, 2] = float(self.cfg.flight_altitude)
+            self.goal[agent][env_ids] += self.terrain.env_origins[env_ids]
+            init_state[env_ids, :3] += self.terrain.env_origins[env_ids]
+
+            self.robots[agent].write_root_pose_to_sim(init_state[env_ids, :7], env_ids)
+            self.robots[agent].write_root_velocity_to_sim(init_state[env_ids, 7:], env_ids)
+            self.robots[agent].write_joint_state_to_sim(
+                self.robots[agent].data.default_joint_pos[env_ids], self.robots[agent].data.default_joint_vel[env_ids], None, env_ids
+            )
 
             if agent in self.prev_dist_to_goal:
                 self.prev_dist_to_goal[agent][env_ids] = torch.linalg.norm(self.goal[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
@@ -366,23 +357,23 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         if len(reset_goal_idx) > 0:
             mission_0_envs = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 0]  # The migration mission
             mission_1_envs = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 1]  # The crossover mission
+            mission_2_envs = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 2]  # The chaotic mission
 
             for agent in self.possible_agents:
                 if len(mission_0_envs) > 0:
                     self.goal[agent][mission_0_envs, :2] = torch.zeros_like(self.goal[agent][mission_0_envs, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-                    self.goal[agent][mission_0_envs, :2] += self.terrain.env_origins[mission_0_envs, :2]
-                    self.goal[agent][mission_0_envs, 2] = self.cfg.flight_altitude
 
                 if len(mission_1_envs) > 0:
                     self.ang[agent][mission_1_envs] += math.pi
-                    self.goal[agent][mission_1_envs] = torch.cat(
-                        [
-                            self.terrain.env_origins[mission_1_envs, :2]
-                            + torch.stack([torch.cos(self.ang[agent][mission_1_envs]), torch.sin(self.ang[agent][mission_1_envs])], dim=1) * self.cfg.init_circle_radius,
-                            torch.ones(len(mission_1_envs), 1, device=self.device) * self.cfg.flight_altitude,
-                        ],
-                        dim=1,
+                    self.goal[agent][mission_1_envs, :2] = (
+                        torch.stack([torch.cos(self.ang[agent][mission_1_envs]), torch.sin(self.ang[agent][mission_1_envs])], dim=1) * self.cfg.init_circle_radius
                     )
+
+                if len(mission_2_envs) > 0:
+                    self.goal[agent][mission_2_envs, :2] = torch.zeros_like(self.goal[agent][mission_2_envs, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+
+                self.goal[agent][reset_goal_idx, 2] = float(self.cfg.flight_altitude)
+                self.goal[agent][reset_goal_idx] += self.terrain.env_origins[reset_goal_idx]
 
             self.reset_goal_timer[reset_goal_idx] = 0.0
 
@@ -451,7 +442,6 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": SwarmBodyrateEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:swarm_sb3_ppo_cfg.yaml",
-        "skrl_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ppo_cfg.yaml",
         "skrl_ippo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ippo_cfg.yaml",
         "skrl_mappo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_mappo_cfg.yaml",
     },

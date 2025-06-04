@@ -285,8 +285,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
         self.execution_time += self.physics_dt
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        # For now, the computation of relative positions is best performed at the beginning of _get_dones,
-        # since _get_dones is executed in the 'step' method of DirectMARLEnv immediately after physics stepping.
+        # Update relative positions before _get_rewards
         for i, agent_i in enumerate(self.possible_agents):
             for j, agent_j in enumerate(self.possible_agents):
                 if i == j:
