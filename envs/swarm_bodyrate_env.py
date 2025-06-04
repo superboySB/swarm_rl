@@ -55,21 +55,23 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     action_freq = 10.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 4  # Number of drones per environment
+    num_drones = 2  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
-    possible_agents = [f"drone_{i}" for i in range(num_drones)]
-    state_space = 16 * num_drones
-    action_spaces = {agent: 4 for agent in possible_agents}
     clip_action = 1.0
+    possible_agents = None
+    action_spaces = None
+    observation_spaces = None
+    state_space = None
 
-    # FIXME: @configclass doesn't support the following syntax #^#
-    # observation_spaces = {agent: 16 + 3 * (num_drones - 1) for agent in possible_agents}
-    observation_spaces = {agent: 16 + 3 * (4 - 1) for agent in possible_agents}
-
-    v_desired = {agent: 2.0 for agent in possible_agents}
-    thrust_to_weight = {agent: 2.0 for agent in possible_agents}
-    w_max = {agent: 1.0 for agent in possible_agents}
+    def __post_init__(self):
+        self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
+        self.state_space = 16 * self.num_drones
+        self.action_spaces = {agent: 4 for agent in self.possible_agents}
+        self.observation_spaces = {agent: 16 + 3 * (self.num_drones - 1) for agent in self.possible_agents}
+        self.v_desired = {agent: 2.0 for agent in self.possible_agents}
+        self.thrust_to_weight = {agent: 2.0 for agent in self.possible_agents}
+        self.w_max = {agent: 1.0 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(

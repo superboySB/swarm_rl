@@ -182,9 +182,21 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
         runner.agent.load(resume_path)
 
         # FIXME: Improve to be more rational
+        # [xdl]: the log_std_parameter retrieved from the checkpoint is not None, set it to the initial value for single and multi agent 
         if args_cli.initial_log_std is not None:
+            # recursive to fill it
+            def fill_log_std(obj):
+                if isinstance(obj, dict):
+                    for v in obj.values():
+                        fill_log_std(v)
+                else:
+                    if hasattr(obj, "log_std_parameter"):
+                        obj.log_std_parameter.data.fill_(args_cli.initial_log_std)
+
             with torch.no_grad():
-                runner.agent.checkpoint_modules["policy"].log_std_parameter.data.fill_(args_cli.initial_log_std)
+                checkpoint_modules = getattr(runner.agent, "checkpoint_modules", None)
+                if checkpoint_modules is not None:
+                    fill_log_std(checkpoint_modules)
 
     runner.run()
 
