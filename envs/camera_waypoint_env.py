@@ -85,6 +85,7 @@ class RGBWaypointEnvCfg(DirectRLEnvCfg):
     # One way to workaround it is to build walls around the environments,
     # which would just be large rectangle prims that block the views of other environments.
     # Another alternative would be to place the environments far apart, or on different height levels.
+    # https://forums.developer.nvidia.com/t/camera-in-rl-tasks-essential-feature-for-robotics/272898
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Robot/body/front_cam",
         offset=TiledCameraCfg.OffsetCfg(pos=(0.1, 0.0, 0.05), rot=(1.0, 0.0, 0.0, 0.0), convention="world"),
