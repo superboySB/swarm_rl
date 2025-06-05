@@ -33,20 +33,28 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     success_reward_weight = 100.0
     time_penalty_weight = 0.0
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
-    mutual_collision_avoidance_reward_weight = 0.1
+    mutual_collision_avoidance_reward_weight = 10.0
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
     speed_deviation_tolerance = 0.5
 
     flight_altitude = 1.0  # Desired flight altitude
-    rand_init_states = True  # Whether to randomly permute initial states among agents
-    success_distance_threshold = 1.0  # Distance threshold for considering goal reached
-    safe_dist = 0.5
-    mission_names = ["migration", "crossover", "chaotic"]
+    success_distance_threshold = 0.2  # Distance threshold for considering goal reached
+    safe_dist = 2.0
     goal_reset_period = 10.0  # Time period for resetting goal
-    goal_range = 10.0  # Range of xy coordinates of the goal
+    mission_names = ["migration", "crossover", "chaotic"]
+    goal_range = 4.0  # Range of xy coordinates of the goal
+    rand_init_states = True  # Whether to randomly permute initial states among agents in the migration mission
     init_circle_radius = 5.0
+
+    # TODO: Improve dirty cirriculum
+    enable_dirty_cirriculum = True
+    training_steps = 2e5
+    init_mutual_collision_avoidance_reward_weight = 0.1
+    init_success_distance_threshold = 1.0
+    init_safe_dist = 1.0
+    init_goal_range = 10.0
 
     # Env
     episode_length_s = 30.0
@@ -55,7 +63,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     action_freq = 10.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 2  # Number of drones per environment
+    num_drones = 6  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
@@ -66,9 +74,9 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
 
     def __post_init__(self):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
-        self.state_space = 16 * self.num_drones
         self.action_spaces = {agent: 4 for agent in self.possible_agents}
         self.observation_spaces = {agent: 16 + 3 * (self.num_drones - 1) for agent in self.possible_agents}
+        self.state_space = 16 * self.num_drones
         self.v_desired = {agent: 2.0 for agent in self.possible_agents}
         self.thrust_to_weight = {agent: 2.0 for agent in self.possible_agents}
         self.w_max = {agent: 1.0 for agent in self.possible_agents}
@@ -202,13 +210,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             self.robots[agent].set_external_force_and_torque(self.thrusts[agent], self.moments[agent], body_ids=self.body_ids[agent])
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        # Update relative positions before _get_rewards
-        for i, agent_i in enumerate(self.possible_agents):
-            for j, agent_j in enumerate(self.possible_agents):
-                if i == j:
-                    continue
-                self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
-
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.5, self.robots[agent].data.root_link_pos_w[:, 2] > 2.0)
@@ -222,8 +223,44 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         return {agent: died for agent in self.cfg.possible_agents}, {agent: time_out for agent in self.cfg.possible_agents}
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
-        if self.cfg.mutual_collision_avoidance_reward_weight < 10:
-            self.cfg.mutual_collision_avoidance_reward_weight += 0.0001
+        # Update relative positions before _get_rewards
+        for i, agent_i in enumerate(self.possible_agents):
+            for j, agent_j in enumerate(self.possible_agents):
+                if i == j:
+                    continue
+                self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
+
+        # TODO: Improve dirty cirriculum
+        if self.cfg.enable_dirty_cirriculum:
+            if not hasattr(self, "delta_mutual_collision_avoidance_reward_weight"):
+                self.final_mutual_collision_avoidance_reward_weight = self.cfg.mutual_collision_avoidance_reward_weight
+                self.cfg.mutual_collision_avoidance_reward_weight = self.cfg.init_mutual_collision_avoidance_reward_weight
+                self.delta_mutual_collision_avoidance_reward_weight = (
+                    self.final_mutual_collision_avoidance_reward_weight - self.cfg.init_mutual_collision_avoidance_reward_weight
+                ) / self.cfg.training_steps
+            else:
+                self.cfg.mutual_collision_avoidance_reward_weight += self.delta_mutual_collision_avoidance_reward_weight
+
+            if not hasattr(self, "delta_success_distance_threshold"):
+                self.final_success_distance_threshold = self.cfg.success_distance_threshold
+                self.cfg.success_distance_threshold = self.cfg.init_success_distance_threshold
+                self.delta_success_distance_threshold = (self.final_success_distance_threshold - self.cfg.init_success_distance_threshold) / self.cfg.training_steps
+            else:
+                self.cfg.success_distance_threshold += self.delta_success_distance_threshold
+
+            if not hasattr(self, "delta_safe_dist"):
+                self.final_safe_dist = self.cfg.safe_dist
+                self.cfg.safe_dist = self.cfg.init_safe_dist
+                self.delta_safe_dist = (self.final_safe_dist - self.cfg.init_safe_dist) / self.cfg.training_steps
+            else:
+                self.cfg.safe_dist += self.delta_safe_dist
+
+            if not hasattr(self, "delta_goal_range"):
+                self.final_goal_range = self.cfg.goal_range
+                self.cfg.goal_range = self.cfg.init_goal_range
+                self.delta_goal_range = (self.final_goal_range - self.cfg.init_goal_range) / self.cfg.training_steps
+            else:
+                self.cfg.goal_range += self.delta_goal_range
 
         rewards = {}
 
@@ -354,8 +391,14 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         # Reset goal after _get_rewards before _get_observations and _get_states
+        success = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        for agent in self.possible_agents:
+            dist_to_goal = torch.linalg.norm(self.goal[agent] - self.robots[agent].data.root_pos_w, dim=1)
+            success = torch.logical_and(success, dist_to_goal < self.cfg.success_distance_threshold)
+
         self.reset_goal_timer += self.step_dt
-        reset_goal_idx = (self.reset_goal_timer > self.cfg.goal_reset_period).nonzero(as_tuple=False).squeeze(-1)
+
+        reset_goal_idx = ((self.reset_goal_timer > self.cfg.goal_reset_period) | success).nonzero(as_tuple=False).squeeze(-1)
         if len(reset_goal_idx) > 0:
             mission_0_envs = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 0]  # The migration mission
             mission_1_envs = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 1]  # The crossover mission
@@ -380,6 +423,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             self.reset_goal_timer[reset_goal_idx] = 0.0
 
         observations = {}
+
         for i, agent in enumerate(self.possible_agents):
             body2goal_w = self.goal[agent] - self.robots[agent].data.root_pos_w
 

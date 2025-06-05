@@ -28,7 +28,7 @@ parser.add_argument("--save_interval", type=int, default=None, help="Interval be
 parser.add_argument("--video", action="store_true", default=True, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in steps).")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
-parser.add_argument("--initial_log_std", type=float, default=None, help="Initial log standard deviation of the Gaussian model.")
+parser.add_argument("--init_log_std", type=float, default=None, help="Initial log standard deviation of the Gaussian model.")
 parser.add_argument("--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes.")
 parser.add_argument("--ml_framework", type=str, default="torch", choices=["torch", "jax", "jax-numpy"], help="The ML framework used for training the skrl agent.")
 parser.add_argument("--algorithm", type=str, default="PPO", choices=["AMP", "PPO", "IPPO", "MAPPO"], help="The RL algorithm used for training the skrl agent.")
@@ -182,16 +182,16 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
         runner.agent.load(resume_path)
 
         # FIXME: Improve to be more rational
-        # [xdl]: the log_std_parameter retrieved from the checkpoint is not None, set it to the initial value for single and multi agent 
-        if args_cli.initial_log_std is not None:
-            # recursive to fill it
+        # [xdl]: the log_std_parameter retrieved from the checkpoint is not None, set it to the initial value for single and multi agent
+        if args_cli.init_log_std is not None:
+            # Recursive filling
             def fill_log_std(obj):
                 if isinstance(obj, dict):
                     for v in obj.values():
                         fill_log_std(v)
                 else:
                     if hasattr(obj, "log_std_parameter"):
-                        obj.log_std_parameter.data.fill_(args_cli.initial_log_std)
+                        obj.log_std_parameter.data.fill_(args_cli.init_log_std)
 
             with torch.no_grad():
                 checkpoint_modules = getattr(runner.agent, "checkpoint_modules", None)
