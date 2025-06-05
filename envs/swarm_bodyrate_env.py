@@ -81,6 +81,9 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
         self.thrust_to_weight = {agent: 2.0 for agent in self.possible_agents}
         self.w_max = {agent: 1.0 for agent in self.possible_agents}
 
+    # [xdl]: domain randomization settings
+    domain_randomization = False
+
     # Simulation
     sim: SimulationCfg = SimulationCfg(
         dt=1 / physics_freq,
@@ -427,25 +430,62 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         for i, agent in enumerate(self.possible_agents):
             body2goal_w = self.goal[agent] - self.robots[agent].data.root_pos_w
 
-            relative_positions_w = []
+            # relative_positions_w = []
+            # for j, _ in enumerate(self.possible_agents):
+            #     if i == j:
+            #         continue
+            #     relative_positions_w.append(self.relative_positions_w[i][j].clone())
+            # relative_positions_w = torch.cat(relative_positions_w, dim=-1)
+            relative_pos_msk = []
             for j, _ in enumerate(self.possible_agents):
                 if i == j:
                     continue
-                relative_positions_w.append(self.relative_positions_w[i][j].clone())
-            relative_positions_w = torch.cat(relative_positions_w, dim=-1)
+                relative_pos = self.relative_positions_w[i][j].clone()  # shape: [num_envs, 3]
+                dist = torch.norm(relative_pos, dim=-1)  # [num_envs]
+                mask = torch.ones_like(dist)
+
+                # --- domain randomization ---
+                if self.cfg.domain_randomization:
+                    mask[dist > 10.0] = 0.0
+                    relative_pos[dist > 10.0] = 0.0
+
+                    mid_range = (dist > 5.0) & (dist <= 10.0)
+                    if mid_range.any():
+                        prob = 0.5 * (dist[mid_range] - 5.0) / 5.0  # 5.0 meter to 10.0 meter, probability from 0 to 1
+                        rand = torch.rand_like(prob)
+                        drop = rand < prob  # drop frames with probability proportional to distance
+                        mask[mid_range] = (~drop).float()
+                        relative_pos[mid_range][drop] = 0.0  # set dropped frames to zero
+
+                    close_range = dist <= 5.0
+                    if close_range.any():
+                        std = 0.01 + 0.04 * (dist[close_range] / 5.0)  # std from 0.01 to 0.05
+                        noise = torch.randn_like(relative_pos[close_range]) * std.unsqueeze(-1)
+                        relative_pos[close_range] += noise
+
+                # # Domain randomization techniques:
+                # # 1. Random masking: randomly mask out some relative positions to simulate sensor noise
+                # if torch.rand(1).item() < 0.01:
+                #     mask[:] = 0.0
+                #     relative_pos[:] = 0.0
+
+                # cancatenate relative position and mask
+                relative_pos_msk.append(torch.cat([relative_pos, mask.unsqueeze(-1)], dim=-1))  # [num_envs, 4]
+            relative_positions_w = torch.cat(relative_pos_msk, dim=-1)  # [num_envs, 12]
 
             obs = torch.cat(
                 [
                     body2goal_w,
                     self.robots[agent].data.root_quat_w.clone(),
                     self.robots[agent].data.projected_gravity_b.clone(),
-                    self.robots[agent].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    self.robots[
+                        agent
+                    ].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
                     relative_positions_w,
                 ],
                 dim=-1,
             )
             observations[agent] = obs
-
         return observations
 
     def _get_states(self):
