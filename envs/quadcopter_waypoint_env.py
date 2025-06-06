@@ -328,7 +328,7 @@ class QuadcopterWaypointEnv(DirectRLEnv):
         # wps_z_deviation_reward = torch.exp(-self.cfg.wps_z_deviation_scale * wps_z_deviation_mean)
         wps_z_deviation_reward = -wps_z_deviation_mean
 
-        ## ============= Smoothing ============= ##
+        ### ============= Smoothing ============= ###
         ang_vel_reward = -torch.linalg.norm(self.robot.data.root_ang_vel_w, dim=1)
 
         # Calculate coefficient of variation (CV) of distances
@@ -383,7 +383,7 @@ class QuadcopterWaypointEnv(DirectRLEnv):
             "time_penalty": time_reward * self.cfg.time_penalty_weight * self.step_dt,
             "speed_maintenance": speed_maintenance_reward * self.cfg.speed_maintenance_reward_weight * self.step_dt,
             "wps_z_deviation": wps_z_deviation_reward * self.cfg.wps_z_deviation_reward_weight * self.step_dt,
-            ## ============= Smoothing ============= ##
+            ### ============= Smoothing ============= ###
             "ang_vel_penalty": ang_vel_reward * self.cfg.ang_vel_penalty_weight * self.step_dt,
             "dist_btw_wps_uniformity": dist_btw_wps_uniformity_reward * self.cfg.dist_btw_wps_uniformity_reward_weight * self.step_dt,
             "angle_restriction": angle_restriction_reward * self.cfg.angle_restriction_reward_weight * self.step_dt,

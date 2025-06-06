@@ -41,7 +41,7 @@ memory:
 agent:
   class: IPPO
   # rollouts: 100  # 10 steps/sec for waypoint envs
-  rollouts: 500  # 50 steps/sec for bodyrate envs
+  rollouts: 200  # 50 steps/sec for bodyrate envs
   learning_epochs: 5
   mini_batches: 2
   discount_factor: 0.99

@@ -4,3 +4,6 @@
 [submodule "reinforcement_learning/lib/stable-baselines3"]
 	path = reinforcement_learning/lib/stable-baselines3
 	url = git@github.com:lyf-FATAS/stable-baselines3.git
+[submodule "envs/lib/IsaacLab"]
+	path = envs/lib/IsaacLab
+	url = git@github.com:lyf-FATAS/IsaacLab.git

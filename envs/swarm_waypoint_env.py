@@ -130,7 +130,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
             raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
 
         # Goal position
-        self.goal = torch.zeros(self.num_envs, 3, device=self.device)
+        self.goals = torch.zeros(self.num_envs, 3, device=self.device)
         self.reset_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Get specific body indices for each drone
@@ -316,7 +316,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
                 mutual_collision_avoidance_reward -= collision_penalty
 
         for agent in self.possible_agents:
-            dist_to_goal = torch.linalg.norm(self.goal - self.robots[agent].data.root_pos_w, dim=1)
+            dist_to_goal = torch.linalg.norm(self.goals - self.robots[agent].data.root_pos_w, dim=1)
             approaching_goal_reward = torch.zeros(self.num_envs, device=self.device)
             if agent in self.prev_dist_to_goal:
                 approaching_goal_reward = self.prev_dist_to_goal[agent] - dist_to_goal
@@ -324,7 +324,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
 
             dist_to_goal_reward = torch.exp(-self.cfg.dist_to_goal_scale * dist_to_goal)
 
-            tail_wp_dist_to_goal = torch.linalg.norm(self.goal - self.p_tail[agent], dim=1)
+            tail_wp_dist_to_goal = torch.linalg.norm(self.goals - self.p_tail[agent], dim=1)
             tail_wp_dist_to_goal_reward = torch.exp(-self.cfg.tail_wp_dist_to_goal_scale * tail_wp_dist_to_goal)
 
             success = dist_to_goal < self.cfg.success_distance_threshold
@@ -370,9 +370,9 @@ class SwarmWaypointEnv(DirectMARLEnv):
         self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
-        self.goal[env_ids, :2] = torch.zeros_like(self.goal[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-        self.goal[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.goal[env_ids, 2] = torch.ones_like(self.goal[env_ids, 2]) * self.cfg.flight_altitude
+        self.goals[env_ids, :2] = torch.zeros_like(self.goals[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+        self.goals[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
+        self.goals[env_ids, 2] = torch.ones_like(self.goals[env_ids, 2]) * self.cfg.flight_altitude
         self.reset_goal_timer[env_ids] = 0.0
 
         # Reset robot state
@@ -395,7 +395,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
             self.controllers[agent].reset(env_ids)
 
             if agent in self.prev_dist_to_goal:
-                self.prev_dist_to_goal[agent][env_ids] = torch.linalg.norm(self.goal[env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
+                self.prev_dist_to_goal[agent][env_ids] = torch.linalg.norm(self.goals[env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
 
         # Update relative positions
         for i, agent_i in enumerate(self.possible_agents):
@@ -408,14 +408,14 @@ class SwarmWaypointEnv(DirectMARLEnv):
         self.reset_goal_timer += self.step_dt
         reset_goal_idx = self.reset_goal_timer > self.cfg.goal_reset_period
         if reset_goal_idx.any():
-            self.goal[reset_goal_idx, :2] = torch.zeros_like(self.goal[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-            self.goal[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
-            self.goal[reset_goal_idx, 2] = torch.ones_like(self.goal[reset_goal_idx, 2]) * self.cfg.flight_altitude
+            self.goals[reset_goal_idx, :2] = torch.zeros_like(self.goals[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+            self.goals[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
+            self.goals[reset_goal_idx, 2] = torch.ones_like(self.goals[reset_goal_idx, 2]) * self.cfg.flight_altitude
             self.reset_goal_timer[reset_goal_idx] = 0.0
 
         observations = {}
         for i, agent in enumerate(self.possible_agents):
-            body2goal_w = self.goal - self.robots[agent].data.root_pos_w
+            body2goal_w = self.goals - self.robots[agent].data.root_pos_w
 
             relative_positions_w = []
             for j, _ in enumerate(self.possible_agents):
@@ -487,7 +487,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
 
     def _debug_vis_callback(self, event):
         if hasattr(self, "goal_visualizer"):
-            self.goal_visualizer.visualize(translations=self.goal)
+            self.goal_visualizer.visualize(translations=self.goals)
 
         if self.visualize_new_cmd:
             if hasattr(self, "waypoint_visualizers"):

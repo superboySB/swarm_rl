@@ -220,7 +220,7 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
         v_curr = torch.linalg.norm(self.robot.data.root_lin_vel_w, dim=1)
         speed_maintenance_reward = torch.exp(-((torch.abs(v_curr - self.cfg.v_desired) / self.cfg.speed_deviation_tolerance) ** 2))
 
-        ## ============= Smoothing ============= ##
+        ### ============= Smoothing ============= ###
         ang_vel_reward = -torch.linalg.norm(self.robot.data.root_ang_vel_w, dim=1)
 
         # Reward for temporal smoothness of actions
@@ -238,7 +238,7 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
             "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
             "time_penalty": time_reward * self.cfg.time_penalty_weight * self.step_dt,
             "speed_maintenance": speed_maintenance_reward * self.cfg.speed_maintenance_reward_weight * self.step_dt,
-            ## ============= Smoothing ============= ##
+            ### ============= Smoothing ============= ###
             "ang_vel_penalty": ang_vel_reward * self.cfg.ang_vel_penalty_weight * self.step_dt,
             "action_temporal_smoothness": action_temporal_smoothness_reward * self.cfg.action_temporal_smoothness_reward_weight * self.step_dt,
         }
