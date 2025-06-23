@@ -479,7 +479,7 @@ class SwarmWaypointEnv(DirectMARLEnv):
                         self.traj_visualizers[agent] = []
                         for j in range(self.cfg.num_pieces * self.resolution):
                             marker_cfg = VisualizationMarkersCfg(
-                                prim_path=f"/Visuals/Command/Robot_{i}//traj_pt_{j}",
+                                prim_path=f"/Visuals/Command/Robot_{i}/traj_pt_{j}",
                                 markers={"sphere": sim_utils.SphereCfg(radius=0.005, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.1, 1.0)))},
                             )
                             self.traj_visualizers[agent].append(VisualizationMarkers(marker_cfg))

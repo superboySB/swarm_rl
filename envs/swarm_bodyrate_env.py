@@ -10,12 +10,11 @@ from loguru import logger
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, ViewerCfg
-from isaaclab.markers import VisualizationMarkers
+from isaaclab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_inv, quat_rotate
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
@@ -29,7 +28,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     viewer = ViewerCfg(eye=(3.0, -3.0, 40.0))
 
     # Reward weights
-    death_penalty_weight = 10.0
+    death_penalty_weight = 1.0
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
@@ -48,24 +47,21 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
 
     flight_altitude = 1.0  # Desired flight altitude
     safe_dist = 1.0
+    collide_dist = 0.6
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
-    migration_goal_range = 5.0  # Range of xy coordinates of the goal in mission "migration"
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
-    chaotic_goal_range = 2.5  # Range of xy coordinates of the goal in mission "chaotic"
+    migration_goal_range = 5.0  # Range of xy coordinates of the goal in mission "migration"
+    chaotic_goal_range = 3.0  # Range of xy coordinates of the goal in mission "chaotic"
     rand_init_states = True  # Whether to randomly permute initial states among agents in the migration mission
     birth_circle_radius = 2.5
 
     # TODO: Improve dirty curriculum
     enable_dirty_curriculum = True
     curriculum_steps = 1e5
-    init_death_penalty_weight = 0.1
+    init_death_penalty_weight = 0.01
     init_mutual_collision_avoidance_reward_weight = 0.01
-    init_ang_vel_penalty_weight = 0.0001
-    init_ang_vel_diff_penalty_weight = 0.0001
-    init_thrust_diff_penalty_weight = 0.0001
-    init_safe_dist = 1.0
 
     # Env
     episode_length_s = 30.0
@@ -81,7 +77,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     possible_agents = None
     action_spaces = None
     history_length = 5
-    transient_observasion_dim = 17 + 4 * (num_drones - 1)
+    transient_observasion_dim = 17 + 7 * (num_drones - 1)
     observation_spaces = None
     transient_state_dim = 16 * num_drones
     state_space = None
@@ -135,6 +131,8 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
+    debug_vis_safe_dist = False
+    debug_vis_rel_pos = True
 
 
 class SwarmBodyrateEnv(DirectMARLEnv):
@@ -180,6 +178,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.relative_positions_w = {
             i: {j: torch.zeros(self.num_envs, 3, device=self.device) for j in range(self.cfg.num_drones) if j != i} for i in range(self.cfg.num_drones)
         }
+        self.relative_positions_with_observability = {}
 
         self.reset_env_ids = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.observation_buffer = {
@@ -260,7 +259,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     continue
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
-                died = torch.logical_or(died, torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < 0.6)
+                died = torch.logical_or(died, torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -285,34 +284,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 ) / self.cfg.curriculum_steps
             else:
                 self.cfg.mutual_collision_avoidance_reward_weight += self.delta_mutual_collision_avoidance_reward_weight
-
-            if not hasattr(self, "delta_ang_vel_penalty_weight"):
-                self.final_ang_vel_penalty_weight = self.cfg.ang_vel_penalty_weight
-                self.cfg.ang_vel_penalty_weight = self.cfg.init_ang_vel_penalty_weight
-                self.delta_ang_vel_penalty_weight = (self.final_ang_vel_penalty_weight - self.cfg.init_ang_vel_penalty_weight) / self.cfg.curriculum_steps
-            else:
-                self.cfg.ang_vel_penalty_weight += self.delta_ang_vel_penalty_weight
-
-            if not hasattr(self, "delta_ang_vel_diff_penalty_weight"):
-                self.final_ang_vel_diff_penalty_weight = self.cfg.ang_vel_diff_penalty_weight
-                self.cfg.ang_vel_diff_penalty_weight = self.cfg.init_ang_vel_diff_penalty_weight
-                self.delta_ang_vel_diff_penalty_weight = (self.final_ang_vel_diff_penalty_weight - self.cfg.init_ang_vel_diff_penalty_weight) / self.cfg.curriculum_steps
-            else:
-                self.cfg.ang_vel_diff_penalty_weight += self.delta_ang_vel_diff_penalty_weight
-
-            if not hasattr(self, "delta_thrust_diff_penalty_weight"):
-                self.final_thrust_diff_penalty_weight = self.cfg.thrust_diff_penalty_weight
-                self.cfg.thrust_diff_penalty_weight = self.cfg.init_thrust_diff_penalty_weight
-                self.delta_thrust_diff_penalty_weight = (self.final_thrust_diff_penalty_weight - self.cfg.init_thrust_diff_penalty_weight) / self.cfg.curriculum_steps
-            else:
-                self.cfg.thrust_diff_penalty_weight += self.delta_thrust_diff_penalty_weight
-
-            if not hasattr(self, "delta_safe_dist"):
-                self.final_safe_dist = self.cfg.safe_dist
-                self.cfg.safe_dist = self.cfg.init_safe_dist
-                self.delta_safe_dist = (self.final_safe_dist - self.cfg.init_safe_dist) / self.cfg.curriculum_steps
-            else:
-                self.cfg.safe_dist += self.delta_safe_dist
 
         rewards = {}
 
@@ -435,7 +406,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     dmat = torch.cdist(pts, pts)
                     dmat.fill_diagonal_(float("inf"))
                     last_rand_ang = rand_ang
-                    if torch.min(dmat) >= self.cfg.safe_dist:
+                    if torch.min(dmat) >= 1.314 * self.cfg.safe_dist:
                         self.ang[idx] = rand_ang
                         break
                 else:
@@ -455,7 +426,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     dmat = torch.cdist(rand_pts, rand_pts)
                     dmat.fill_diagonal_(float("inf"))
                     last_rand_pts = rand_pts
-                    if torch.min(dmat) >= self.cfg.safe_dist:
+                    if torch.min(dmat) >= 1.314 * self.cfg.safe_dist:
                         init_p[idx] = rand_pts
                         break
                 else:
@@ -467,7 +438,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     dmat = torch.cdist(rand_pts, rand_pts)
                     dmat.fill_diagonal_(float("inf"))
                     last_rand_pts = rand_pts
-                    if torch.min(dmat) >= self.cfg.safe_dist:
+                    if torch.min(dmat) >= 1.314 * self.cfg.safe_dist:
                         goal_p[idx] = rand_pts
                         break
                 else:
@@ -577,7 +548,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         dmat = torch.cdist(rand_pts, rand_pts)
                         dmat.fill_diagonal_(float("inf"))
                         last_rand_pts = rand_pts
-                        if torch.min(dmat) >= self.cfg.safe_dist:
+                        if torch.min(dmat) >= 1.314 * self.cfg.safe_dist:
                             goal_p[idx] = rand_pts
                             break
                     else:
@@ -599,13 +570,18 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.reset_goal_timer[reset_goal_idx] = 0.0
 
         curr_observations = {}
-        for i, agent in enumerate(self.possible_agents):
-            body2goal_w = self.goals[agent] - self.robots[agent].data.root_pos_w
+        for i, agent_i in enumerate(self.possible_agents):
+            body2goal_w = self.goals[agent_i] - self.robots[agent_i].data.root_pos_w
+
+            # TODO: To be removed from observation
+            body2goal_others_w = []
 
             relative_positions_with_observability = []
-            for j, _ in enumerate(self.possible_agents):
+            for j, agent_j in enumerate(self.possible_agents):
                 if i == j:
                     continue
+
+                body2goal_others_w.append(self.goals[agent_j] - self.robots[agent_i].data.root_pos_w)
 
                 relative_positions_w = self.relative_positions_w[i][j].clone()
                 distances = torch.linalg.norm(relative_positions_w, dim=1)
@@ -630,26 +606,29 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         observability_mask[mid_range] = (~discard).float()
 
                 relative_positions_with_observability.append(torch.cat([relative_positions_w, observability_mask.unsqueeze(-1)], dim=-1))
-            relative_positions_with_observability = torch.cat(relative_positions_with_observability, dim=-1)
+            self.relative_positions_with_observability[agent_i] = torch.cat(relative_positions_with_observability, dim=-1)
+
+            body2goal_others_w = torch.cat(body2goal_others_w, dim=-1)
 
             obs = torch.cat(
                 [
-                    self.prev_thrusts_desired_normalized[agent].unsqueeze(-1),
-                    self.prev_w_desired_normalized[agent].clone(),
+                    self.prev_thrusts_desired_normalized[agent_i].unsqueeze(-1),
+                    self.prev_w_desired_normalized[agent_i].clone(),
                     body2goal_w,
-                    self.robots[agent].data.root_quat_w.clone(),
-                    self.robots[agent].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
-                    relative_positions_with_observability,
+                    self.robots[agent_i].data.root_quat_w.clone(),
+                    self.robots[agent_i].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    body2goal_others_w,
+                    self.relative_positions_with_observability[agent_i].clone(),
                 ],
                 dim=-1,
             )
-            curr_observations[agent] = obs
+            curr_observations[agent_i] = obs
 
             # TODO: Where would it make more sense to place ⬇️?
             non_reset_env_ids = ~self.reset_env_ids
             if non_reset_env_ids.any():
-                self.prev_thrusts_desired_normalized[agent][non_reset_env_ids] = self.thrusts_desired_normalized[agent][non_reset_env_ids].clone()
-                self.prev_w_desired_normalized[agent][non_reset_env_ids] = self.w_desired_normalized[agent][non_reset_env_ids].clone()
+                self.prev_thrusts_desired_normalized[agent_i][non_reset_env_ids] = self.thrusts_desired_normalized[agent_i][non_reset_env_ids].clone()
+                self.prev_w_desired_normalized[agent_i][non_reset_env_ids] = self.w_desired_normalized[agent_i][non_reset_env_ids].clone()
 
         # Scroll or reset (fill in the first frame) the observation buffer
         for agent in self.cfg.possible_agents:
@@ -710,10 +689,83 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         self.goal_visualizers[agent] = VisualizationMarkers(marker_cfg)
                         self.goal_visualizers[agent].set_visibility(True)
 
+            if self.cfg.debug_vis_safe_dist:
+                if not hasattr(self, "safe_dist_visualizers"):
+                    self.safe_dist_visualizers = {}
+                    for i, agent in enumerate(self.possible_agents):
+                        marker_cfg = VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/safe_dist_{i}",
+                            markers={
+                                "cylinder": sim_utils.CylinderCfg(
+                                    radius=self.cfg.collide_dist / 2,
+                                    height=0.005,
+                                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.01, 0.01), roughness=0.0),
+                                )
+                            },
+                        )
+                        self.safe_dist_visualizers[agent] = VisualizationMarkers(marker_cfg)
+                        self.safe_dist_visualizers[agent].set_visibility(True)
+
+            if self.cfg.debug_vis_rel_pos:
+                if not hasattr(self, "rel_pos_visualizers"):
+                    self.num_vis_point = 23
+                    self.vis_reset_interval = 3.0
+                    self.last_reset_time = 0.0
+
+                    self.selected_vis_agent = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+                    num_neighbors = len(self.possible_agents) - 1
+
+                    self.rel_pos_visualizers = {}
+                    for j in range(num_neighbors):
+                        self.rel_pos_visualizers[j] = []
+                        for p in range(self.num_vis_point):
+                            marker_cfg = VisualizationMarkersCfg(
+                                prim_path=f"/Visuals/rel_loc_{j}_{p}",
+                                markers={"sphere": sim_utils.SphereCfg(radius=0.05, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.01, 0.01, 1.0)))},
+                            )
+                            self.rel_pos_visualizers[j].append(VisualizationMarkers(marker_cfg))
+                            self.rel_pos_visualizers[j][p].set_visibility(True)
+
     def _debug_vis_callback(self, event):
         if hasattr(self, "goal_visualizers"):
             for agent in self.possible_agents:
                 self.goal_visualizers[agent].visualize(translations=self.goals[agent])
+
+        if hasattr(self, "safe_dist_visualizers"):
+            for agent in self.possible_agents:
+                t = self.robots[agent].data.root_pos_w.clone()
+                t[:, 2] -= 0.077
+                self.safe_dist_visualizers[agent].visualize(translations=t)
+
+        if hasattr(self, "rel_pos_visualizers"):
+            t = self.common_step_counter * self.step_dt
+
+            if t - self.last_reset_time > self.vis_reset_interval:
+                self.last_reset_time = t
+                self.selected_vis_agent = torch.randint(0, len(self.possible_agents), (self.num_envs,), device=self.device)
+
+            rel_obs_list = []
+            for agent in self.possible_agents:
+                rel_obs = self.relative_positions_with_observability[agent].view(self.num_envs, -1, 4)  # [num_envs, num_drones - 1, 4]
+                rel_obs_list.append(rel_obs)
+            # Stack → [num_envs, num_drones, num_drones - 1, 4]
+            stack_rel_obs = torch.stack(rel_obs_list, dim=1)
+
+            sel_idx = self.selected_vis_agent
+            # Select → [num_envs, num_drones-1, 4]
+            sel_rel_obs = stack_rel_obs.gather(dim=1, index=sel_idx.view(self.num_envs, 1, 1, 1).expand(self.num_envs, 1, stack_rel_obs.size(2), 4)).squeeze(1)
+
+            orig_list = [self.robots[a].data.root_pos_w for a in self.possible_agents]
+            stack_orig = torch.stack(orig_list, dim=1)
+            orig = stack_orig.gather(dim=1, index=sel_idx.view(self.num_envs, 1, 1).expand(self.num_envs, 1, 3)).squeeze(1)
+
+            for j in range(sel_rel_obs.size(1)):
+                rel_pos = sel_rel_obs[:, j, :3]
+                mask = sel_rel_obs[:, j, 3].bool()
+                if mask.any():
+                    for p in range(self.num_vis_point):
+                        frac = float(p + 1) / (self.num_vis_point + 1)
+                        self.rel_pos_visualizers[j][p].visualize(translations=orig[mask] + rel_pos[mask] * frac)
 
 
 from config import agents
