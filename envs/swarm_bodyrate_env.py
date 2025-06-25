@@ -35,7 +35,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     time_penalty_weight = 0.0
     altitude_maintenance_reward_weight = 0.0  # Reward for maintaining height close to flight_altitude
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
-    mutual_collision_avoidance_reward_weight = 1.0
+    mutual_collision_avoidance_reward_weight = 0.01
     lin_vel_penalty_weight = 0.001
     ang_vel_penalty_weight = 0.0001
     ang_vel_diff_penalty_weight = 0.0001
@@ -46,7 +46,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     speed_deviation_tolerance = 0.5
 
     flight_altitude = 1.0  # Desired flight altitude
-    safe_dist = 1.0
+    safe_dist = 0.8
     collide_dist = 0.6
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
@@ -59,8 +59,8 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
 
     # TODO: Improve dirty curriculum
     enable_dirty_curriculum = True
-    curriculum_steps = 1e5
-    init_death_penalty_weight = 0.01
+    curriculum_steps = 2e5
+    init_death_penalty_weight = 0.1
     init_mutual_collision_avoidance_reward_weight = 0.01
 
     # Env
@@ -70,14 +70,14 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     action_freq = 50.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 3  # Number of drones per environment
+    num_drones = 5  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
     possible_agents = None
     action_spaces = None
     history_length = 5
-    transient_observasion_dim = 17 + 7 * (num_drones - 1)
+    transient_observasion_dim = 17 + 4 * (num_drones - 1)
     observation_spaces = None
     transient_state_dim = 16 * num_drones
     state_space = None
@@ -131,7 +131,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
-    debug_vis_safe_dist = False
+    debug_vis_safe_dist = True
     debug_vis_rel_pos = True
 
 
@@ -260,6 +260,14 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
                 died = torch.logical_or(died, torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist)
+
+        # TODO: Test
+        # success = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        # for agent in self.possible_agents:
+        #     dist_to_goal = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
+        #     success = torch.logical_and(success, dist_to_goal < self.success_dist_thr)
+
+        # died = torch.logical_or(died, success)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -617,7 +625,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     body2goal_w,
                     self.robots[agent_i].data.root_quat_w.clone(),
                     self.robots[agent_i].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
-                    body2goal_others_w,
+                    # body2goal_others_w,
                     self.relative_positions_with_observability[agent_i].clone(),
                 ],
                 dim=-1,
