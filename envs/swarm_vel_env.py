@@ -35,13 +35,13 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 0.6
+    death_penalty_weight = 0.5
     approaching_goal_reward_weight = 1.0
-    dist_to_goal_reward_weight = 0.5
+    dist_to_goal_reward_weight = 0.0
     success_reward_weight = 1.0
     time_penalty_weight = 0.0
     altitude_maintenance_reward_weight = 0.0  # Reward for maintaining height close to flight_altitude
-    mutual_collision_avoidance_reward_weight = 1.0
+    mutual_collision_avoidance_reward_weight = 0.5
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_diff_penalty_weight = 0.0
@@ -66,8 +66,8 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # TODO: Improve dirty curriculum
     enable_dirty_curriculum = True
     curriculum_steps = 2e5
-    init_death_penalty_weight = 0.13
-    init_mutual_collision_avoidance_reward_weight = 0.13
+    init_death_penalty_weight = 0.01
+    init_mutual_collision_avoidance_reward_weight = 0.01
 
     # Env
     episode_length_s = 30.0
@@ -83,7 +83,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     possible_agents = None
     action_spaces = None
     history_length = 5
-    transient_observasion_dim = 8 + 4 * (num_drones - 1)
+    transient_observasion_dim = 6 + 4 * (num_drones - 1)
     # transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 16 * num_drones
@@ -198,6 +198,7 @@ class SwarmVelEnv(DirectMARLEnv):
         }
         self.relative_positions_with_observability = {}
 
+        self.died = {agent: torch.zeros(self.num_envs, dtype=torch.bool, device=self.device) for agent in self.cfg.possible_agents}
         self.reset_env_ids = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.observation_buffer = {
             agent: torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_observasion_dim, device=self.device) for agent in self.cfg.possible_agents
@@ -283,12 +284,12 @@ class SwarmVelEnv(DirectMARLEnv):
             self.robots[agent].set_external_force_and_torque(self._thrust_desired[agent].unsqueeze(1), self.m_desired[agent].unsqueeze(1), body_ids=self.body_ids[agent])
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        died_unified = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
 
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.9, self.robots[agent].data.root_link_pos_w[:, 2] > 1.1)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
-            _died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
+            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
             x_exceed_bounds = torch.logical_or(
                 self.robots[agent].data.root_link_pos_w[:, 0] - self.terrain.env_origins[:, 0] < -self.xy_boundary,
@@ -298,9 +299,9 @@ class SwarmVelEnv(DirectMARLEnv):
                 self.robots[agent].data.root_link_pos_w[:, 1] - self.terrain.env_origins[:, 1] < -self.xy_boundary,
                 self.robots[agent].data.root_link_pos_w[:, 1] - self.terrain.env_origins[:, 1] > self.xy_boundary,
             )
-            _died = torch.logical_or(_died, torch.logical_or(x_exceed_bounds, y_exceed_bounds))
+            self.died[agent] = torch.logical_or(self.died[agent], torch.logical_or(x_exceed_bounds, y_exceed_bounds))
 
-            died = torch.logical_or(died, _died)
+            died_unified = torch.logical_or(died_unified, self.died[agent])
 
         # Update relative positions, detecting collisions along the way
         for i, agent_i in enumerate(self.possible_agents):
@@ -309,7 +310,8 @@ class SwarmVelEnv(DirectMARLEnv):
                     continue
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
-                died = torch.logical_or(died, torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist)
+                self.died[agent_i] = torch.logical_or(self.died[agent_i], torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist)
+            died_unified = torch.logical_or(died_unified, self.died[agent_i])
 
         # TODO: Test
         # success = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
@@ -317,11 +319,11 @@ class SwarmVelEnv(DirectMARLEnv):
         #     dist_to_goal = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
         #     success = torch.logical_and(success, dist_to_goal < self.success_dist_thr)
 
-        # died = torch.logical_or(died, success)
+        # died_unified = torch.logical_or(died_unified, success)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        return {agent: died for agent in self.cfg.possible_agents}, {agent: time_out for agent in self.cfg.possible_agents}
+        return {agent: died_unified for agent in self.cfg.possible_agents}, {agent: time_out for agent in self.cfg.possible_agents}
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         # TODO: Improve dirty curriculum
@@ -344,8 +346,6 @@ class SwarmVelEnv(DirectMARLEnv):
                 self.cfg.mutual_collision_avoidance_reward_weight += self.delta_mutual_collision_avoidance_reward_weight
 
         rewards = {}
-
-        death_reward = -torch.where(self.terminated_dict["drone_0"], torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
 
         mutual_collision_avoidance_reward = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.possible_agents}
         for i, agent in enumerate(self.possible_agents):
@@ -374,6 +374,8 @@ class SwarmVelEnv(DirectMARLEnv):
             success_reward = torch.where(success_i, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
             # Time penalty for not reaching the goal
             time_reward = -torch.where(~success_i, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
+
+            death_reward = -torch.where(self.died[agent], torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
 
             # Reward for maintaining height close to flight_altitude
             z_curr = self.robots[agent].data.root_pos_w[:, 2]
@@ -697,12 +699,12 @@ class SwarmVelEnv(DirectMARLEnv):
             obs = torch.cat(
                 [
                     self.v_polar_coord_desired_normalized[agent_i].clone(),
-                    # self.robots[agent_i].data.root_pos_w - self.terrain.env_origins,
-                    # self.goals[agent_i] - self.terrain.env_origins,
-                    body2goal_w,
+                    # (self.robots[agent_i].data.root_pos_w - self.terrain.env_origins)[:, :2].clone(),
+                    # (self.goals[agent_i] - self.terrain.env_origins)[:, :2].clone(),
+                    body2goal_w[:, :2].clone(),
                     # self.robots[agent_i].data.root_quat_w.clone(),
                     # self.robots[agent_i].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
-                    self.robots[agent_i].data.root_lin_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    self.robots[agent_i].data.root_lin_vel_w[:, :2].clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
                     # goal_others_w,
                     # body2goal_others_w,
                     self.relative_positions_with_observability[agent_i].clone(),
