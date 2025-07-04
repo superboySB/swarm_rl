@@ -89,15 +89,22 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     transient_state_dim = 16 * num_drones
     state_space = None
 
+    # Domain randomization
+    enable_domain_randomization = False
+
+    # Informed reset
+    enable_informed_reset = True
+    informed_reset_prob = 0.77
+    min_informed_time = 0.2
+    max_informed_time = 2.0
+    max_failure_buffer_size = 1000
+
     def __post_init__(self):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.state_space = self.history_length * self.transient_state_dim
         self.v_max = {agent: 2.0 for agent in self.possible_agents}
-
-    # [xdl]: domain randomization settings
-    enable_domain_randomization = False
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -205,6 +212,9 @@ class SwarmVelEnv(DirectMARLEnv):
         }
         self.state_buffer = torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_state_dim, device=self.device)
 
+        self.history_state_buffer = []
+        self.failure_buffer = []
+
         # Logging
         self.episode_sums = {}
 
@@ -285,6 +295,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died_unified = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        collision_died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
 
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.9, self.robots[agent].data.root_link_pos_w[:, 2] > 1.1)
@@ -310,7 +321,10 @@ class SwarmVelEnv(DirectMARLEnv):
                     continue
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
-                self.died[agent_i] = torch.logical_or(self.died[agent_i], torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist)
+                collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
+                collision_died = torch.logical_or(collision_died, collision)
+                self.died[agent_i] = torch.logical_or(self.died[agent_i], collision)
+
             died_unified = torch.logical_or(died_unified, self.died[agent_i])
 
         # TODO: Test
@@ -322,6 +336,37 @@ class SwarmVelEnv(DirectMARLEnv):
         # died_unified = torch.logical_or(died_unified, success)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
+
+        all_states = []
+        for agent in self.possible_agents:
+            state = self.robots[agent].data.root_state_w.clone()
+            state[:, :3] -= self.terrain.env_origins
+            goal = self.goals[agent].clone()
+            goal[:, :3] -= self.terrain.env_origins
+            xy_boundary = self.xy_boundary.clone().unsqueeze(-1)
+            state_with_goal = torch.cat([state, goal, xy_boundary], dim=-1)  # [num_envs, 17]
+            all_states.append(state_with_goal)
+        all_states_tensor = torch.stack(all_states, dim=1)  # [num_envs, num_agents, 17]
+        self.history_state_buffer.append(all_states_tensor)
+        if len(self.history_state_buffer) > self.cfg.max_informed_time * self.cfg.action_freq:
+            self.history_state_buffer.pop(0)
+
+        history_state_tensor = torch.stack(self.history_state_buffer, dim=0)  # [num_frames, num_envs, num_agents, state_size]
+
+        mask = collision_died  # [num_envs] bool indicating which environments collided
+        if mask.any() and len(self.history_state_buffer) >= self.cfg.max_informed_time * self.cfg.action_freq:
+            collided_envs = torch.nonzero(mask, as_tuple=True)[0]
+            frame_indices = torch.randint(0, len(self.history_state_buffer) - self.cfg.min_informed_time * self.cfg.action_freq, size=(collided_envs.shape[0],))
+            failure_states = history_state_tensor[frame_indices, collided_envs]
+
+            non_empty_failure_states = failure_states[~torch.all(failure_states == 0, dim=(1, 2))]
+            if non_empty_failure_states.shape[0] > 0:
+                self.failure_buffer.extend(non_empty_failure_states)
+                while len(self.failure_buffer) > self.cfg.max_failure_buffer_size:
+                    self.failure_buffer.pop(0)
+
+        history_state_tensor[:, torch.nonzero(died_unified, as_tuple=True)[0]] = 0.0
+        self.history_state_buffer = [history_state_tensor[i] for i in range(history_state_tensor.shape[0])]
 
         return {agent: died_unified for agent in self.cfg.possible_agents}, {agent: time_out for agent in self.cfg.possible_agents}
 
@@ -527,6 +572,14 @@ class SwarmVelEnv(DirectMARLEnv):
                     logger.warning(f"The search for goal positions of the swarm meeting constraints within a side-length {rg} box failed, using the final sample #_#")
                     goal_p[idx] = last_rand_pts
 
+        self.informed = self.cfg.enable_informed_reset and random.random() < self.cfg.informed_reset_prob and len(self.failure_buffer) > 0
+        if self.informed:
+            # Informed reset: set initial state and goal based on a randomly chosen state from the failure buffer
+            informed_states = torch.stack([random.choice(self.failure_buffer) for _ in env_ids])
+            self.informed_ids = env_ids
+        else:
+            informed_states = None
+
         for i, agent in enumerate(self.possible_agents):
             init_state = self.robots[agent].data.default_root_state.clone()
 
@@ -559,6 +612,12 @@ class SwarmVelEnv(DirectMARLEnv):
 
             self.goals[agent][env_ids, 2] = float(self.cfg.flight_altitude)
             self.goals[agent][env_ids] += self.terrain.env_origins[env_ids]
+
+            if informed_states is not None:
+                init_state[env_ids, :13] = (informed_states[:, i, :13]).clone()
+                init_state[env_ids, :3] = informed_states[:, i, :3] + self.terrain.env_origins[env_ids]
+                self.goals[agent][env_ids] = informed_states[:, i, 13:16] + self.terrain.env_origins[env_ids]
+                self.xy_boundary[env_ids] = (informed_states[:, i, 16]).clone()
 
             self.robots[agent].write_root_pose_to_sim(init_state[env_ids, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(init_state[env_ids, 7:], env_ids)
