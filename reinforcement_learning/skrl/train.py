@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2025, 99.9% The Isaac Lab Project Developers, 0.1% LAJi.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Script to train RL agent with skrl.
 
 Visit the skrl documentation (https://skrl.readthedocs.io) to see the examples structured in
@@ -18,7 +23,7 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1000, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
@@ -44,9 +49,9 @@ if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
 elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
-elif args_cli.task not in ["FAST-Quadcopter-Bodyrate", "FAST-Quadcopter-Waypoint", "FAST-Swarm-Bodyrate", "FAST-Swarm-Vel", "FAST-Swarm-Waypoint"]:
+elif args_cli.task not in ["FAST-Quadcopter-Bodyrate", "FAST-Quadcopter-Vel", "FAST-Quadcopter-Waypoint", "FAST-Swarm-Bodyrate", "FAST-Swarm-Vel", "FAST-Swarm-Waypoint"]:
     raise ValueError(
-        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
     )
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -145,6 +150,8 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     os.makedirs(dump_env_src_dir, exist_ok=True)
     if args_cli.task == "FAST-Quadcopter-Bodyrate":
         env_src_file = "quadcopter_bodyrate_env.py"
+    elif args_cli.task == "FAST-Quadcopter-Vel":
+        env_src_file = "quadcopter_vel_env.py"
     elif args_cli.task == "FAST-Quadcopter-Waypoint":
         env_src_file = "quadcopter_waypoint_env.py"
     elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:

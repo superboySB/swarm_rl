@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2025, LAJi.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 from functools import partial
 from typing import Any, Optional, Tuple, Union
 

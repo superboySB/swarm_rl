@@ -35,7 +35,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 0.0
+    death_penalty_weight = 0.01
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 1.0
@@ -47,8 +47,8 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
-    speed_deviation_tolerance = 0.5
-    mutual_collision_avoidance_reward_scale = 0.5  # Correspond to safe_dist of 3.0, collide_dist of 0.6
+    mutual_collision_avoidance_reward_scale = 1.0  # Correspond to safe_dist of 1.3, collide_dist of 0.6
+    # mutual_collision_avoidance_reward_scale = 0.5  # Correspond to safe_dist of 3.0, collide_dist of 0.6
     max_lin_vel_penalty_scale = 2.0
 
     flight_altitude = 1.0  # Desired flight altitude
@@ -59,20 +59,21 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     migration_goal_range = 5.0  # Range of xy coordinates of the goal in mission "migration"
-    chaotic_goal_range = 3.0  # Range of xy coordinates of the goal in mission "chaotic"
+    chaotic_goal_range = 3.5  # Range of xy coordinates of the goal in mission "chaotic"
     birth_circle_radius = 2.7
 
     # TODO: Improve dirty curriculum
-    enable_dirty_curriculum = False
-    curriculum_steps = 2e5
+    enable_dirty_curriculum = True
+    curriculum_steps = 30000
     init_death_penalty_weight = 0.0
     init_mutual_collision_avoidance_reward_weight = 0.0
+    init_action_diff_penalty_weight = 0.001
 
     # Env
     episode_length_s = 20.0
     physics_freq = 200.0
     control_freq = 100.0
-    action_freq = 10.0
+    action_freq = 5.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     num_drones = 5  # Number of drones per environment
@@ -381,6 +382,13 @@ class SwarmVelEnv(DirectMARLEnv):
             else:
                 self.cfg.mutual_collision_avoidance_reward_weight += self.delta_mutual_collision_avoidance_reward_weight
 
+            if not hasattr(self, "delta_action_diff_penalty_weight"):
+                self.final_action_diff_penalty_weight = self.cfg.action_diff_penalty_weight
+                self.cfg.action_diff_penalty_weight = self.cfg.init_action_diff_penalty_weight
+                self.delta_action_diff_penalty_weight = (self.final_action_diff_penalty_weight - self.cfg.init_action_diff_penalty_weight) / self.cfg.curriculum_steps
+            else:
+                self.cfg.action_diff_penalty_weight += self.delta_action_diff_penalty_weight
+
         rewards = {}
 
         mutual_collision_avoidance_reward = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.possible_agents}
@@ -681,14 +689,14 @@ class SwarmVelEnv(DirectMARLEnv):
                 if len(mission_2_ids) > 0:
                     goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
                     for i_, agent_ in enumerate(self.possible_agents):
-                        # goal_p[mission_2_ids, i_] = self.goals[agent_][mission_2_ids, :2].clone()
-                        goal_p[mission_2_ids, i_] = self.goals[agent_][mission_2_ids, :2]
+                        goal_p[mission_2_ids, i_] = self.goals[agent_][mission_2_ids, :2].clone()
+                        # goal_p[mission_2_ids, i_] = self.goals[agent_][mission_2_ids, :2]
 
                     for idx in mission_2_ids.tolist():
                         rg = self.rand_rg[idx]
 
                         for attempt in range(self.cfg.max_sampling_tries):
-                            goal_p[idx, i] = (torch.rand(2, device=self.device) * 2 - 1) * rg
+                            goal_p[idx, i] = (torch.rand(2, device=self.device) * 2 - 1) * rg + self.terrain.env_origins[idx, :2]
                             dmat = torch.cdist(goal_p[idx], goal_p[idx])
                             dmat.fill_diagonal_(float("inf"))
                             if torch.min(dmat) >= 2.3 * self.cfg.collide_dist:
@@ -698,9 +706,7 @@ class SwarmVelEnv(DirectMARLEnv):
                                 f"The search for goal positions of the swarm meeting constraints within a side-length {rg} box failed, using the final sample #_#"
                             )
 
-                    # self.goals[agent][mission_2_ids, :2] = goal_p[mission_2_ids, i]
-                    self.goals[agent][mission_2_ids, 2] = float(self.cfg.flight_altitude)
-                    self.goals[agent][mission_2_ids] += self.terrain.env_origins[mission_2_ids]
+                    self.goals[agent][mission_2_ids, :2] = goal_p[mission_2_ids, i]
 
                 self.reset_goal_timer[agent][reset_goal_idx] = 0.0
 

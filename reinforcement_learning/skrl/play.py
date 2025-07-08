@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2025, 99.9% The Isaac Lab Project Developers, 0.1% LAJi.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Script to play a checkpoint of an RL agent from skrl.
 
 Visit the skrl documentation (https://skrl.readthedocs.io) to see the examples structured in
@@ -19,11 +24,11 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=300, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in steps).")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
 parser.add_argument("--real_time", action="store_true", default=True, help="Run in real-time, if possible.")
 parser.add_argument(
@@ -52,9 +57,9 @@ if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
 elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
-elif args_cli.task not in ["FAST-Quadcopter-Bodyrate", "FAST-Quadcopter-Waypoint", "FAST-Swarm-Bodyrate", "FAST-Swarm-Vel", "FAST-Swarm-Waypoint"]:
+elif args_cli.task not in ["FAST-Quadcopter-Bodyrate", "FAST-Quadcopter-Vel", "FAST-Quadcopter-Waypoint", "FAST-Swarm-Bodyrate", "FAST-Swarm-Vel", "FAST-Swarm-Waypoint"]:
     raise ValueError(
-        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
     )
 if args_cli.video:
     args_cli.enable_cameras = True
