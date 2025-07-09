@@ -10,7 +10,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class SwarmVelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 100
+    num_steps_per_env = 30
     max_iterations = 500
     save_interval = 25
     experiment_name = ""
@@ -28,8 +28,8 @@ class SwarmVelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.0005,
         num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=5.0e-4,
+        num_mini_batches=2,
+        learning_rate=2.0e-4,
         schedule="fixed",
         gamma=0.99,
         lam=0.95,

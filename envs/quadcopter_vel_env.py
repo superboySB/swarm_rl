@@ -157,8 +157,8 @@ class QuadcopterVelEnv(DirectRLEnv):
         # ROS2
         self.node = Node("quadcopter_vel_env", namespace="quadcopter_vel_env")
         self.odom_pub = self.node.create_publisher(Odometry, "odom", 10)
-        self.action_pub = self.node.create_publisher(TwistStamped, "action", 10)
-        self.m_desired_pub = self.node.create_publisher(Vector3Stamped, "m_desired", 10)
+        self.p_desired_pub = self.node.create_publisher(TwistStamped, "p_desired", 10)
+        self.v_desired_pub = self.node.create_publisher(TwistStamped, "v_desired", 10)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
@@ -179,6 +179,7 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.v_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
         self.v_desired[:, :2] = self.v_xy_desired_normalized * self.cfg.v_max
         self.p_desired[:, :2] = self.robot.data.root_pos_w[:, :2] + self.v_desired[:, :2] * self.step_dt
+        # self.p_desired[:, :2] += self.v_desired[:, :2] * self.step_dt
 
     def _apply_action(self):
         if self.control_counter % self.cfg.control_decimation == 0:
@@ -189,6 +190,9 @@ class QuadcopterVelEnv(DirectRLEnv):
             )
 
             self._thrust_desired = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired.unsqueeze(1)), dim=1)
+            
+            self._publish_debug_signals()
+            
             self.control_counter = 0
         self.control_counter += 1
 
@@ -197,7 +201,7 @@ class QuadcopterVelEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 1.5)
         ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
-        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
+        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -375,25 +379,17 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.odom_pub.publish(odom_msg)
 
         # Publish actions
-        thrust_desired = self.thrust[env_id, 0, 2].cpu().numpy()
-        w_desired = self.w_desired[env_id].cpu().numpy()
-        m_desired = self.moment[env_id, 0, :].cpu().numpy()
+        p_desired = self.p_desired[env_id].cpu().numpy()
+        v_desired = self.v_desired[env_id].cpu().numpy()
 
-        action_msg = TwistStamped()
-        action_msg.header.stamp = t
-        action_msg.header.frame_id = "world"
-        action_msg.twist.linear.x = float(thrust_desired)
-        action_msg.twist.angular.x = float(w_desired[0])
-        action_msg.twist.angular.y = float(w_desired[1])
-        action_msg.twist.angular.z = float(w_desired[2])
-        self.action_pub.publish(action_msg)
+        v_desired_msg = TwistStamped()
+        v_desired_msg.header.stamp = t
+        v_desired_msg.header.frame_id = "world"
+        v_desired_msg.twist.linear.x = float(v_desired[0])
+        v_desired_msg.twist.linear.y = float(v_desired[1])
+        v_desired_msg.twist.linear.z = float(v_desired[2])
+        self.v_desired_pub.publish(v_desired_msg)
 
-        m_desired_msg = Vector3Stamped()
-        m_desired_msg.header.stamp = t
-        m_desired_msg.vector.x = float(m_desired[0])
-        m_desired_msg.vector.y = float(m_desired[1])
-        m_desired_msg.vector.z = float(m_desired[2])
-        self.m_desired_pub.publish(m_desired_msg)
 
     def _get_ros_timestamp(self) -> Time:
         sim_time = self._sim_step_counter * self.physics_dt

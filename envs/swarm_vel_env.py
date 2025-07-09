@@ -35,15 +35,15 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 0.2
+    death_penalty_weight = 1.0
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 1.0
     time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 0.1
+    mutual_collision_avoidance_reward_weight = 2.0
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.01
+    action_diff_penalty_weight = 0.005
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
@@ -59,7 +59,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     migration_goal_range = 5.0  # Range of xy coordinates of the goal in mission "migration"
-    chaotic_goal_range = 3.5  # Range of xy coordinates of the goal in mission "chaotic"
+    chaotic_goal_range = 4.0  # Range of xy coordinates of the goal in mission "chaotic"
     birth_circle_radius = 2.7
 
     # TODO: Improve dirty curriculum
@@ -73,7 +73,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     episode_length_s = 20.0
     physics_freq = 200.0
     control_freq = 100.0
-    action_freq = 5.0
+    action_freq = 2.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     num_drones = 5  # Number of drones per environment
@@ -222,6 +222,12 @@ class SwarmVelEnv(DirectMARLEnv):
         self.set_debug_vis(self.cfg.debug_vis)
         self.visualize_new_cmd = False
 
+        # ROS2
+        self.node = Node("swarm_vel_env", namespace="swarm_vel_env")
+        self.odom_pub = self.node.create_publisher(Odometry, "odom", 10)
+        self.v_desired_pub = self.node.create_publisher(TwistStamped, "v_desired", 10)
+        self.m_desired_pub = self.node.create_publisher(Vector3Stamped, "m_desired", 10)
+
     def _setup_scene(self):
         self.robots = {}
         points_per_side = math.ceil(math.sqrt(self.cfg.num_drones))
@@ -287,6 +293,8 @@ class SwarmVelEnv(DirectMARLEnv):
             end = time.perf_counter()
             logger.debug(f"get_control for all drones takes {end - start:.5f}s")
 
+            self._publish_debug_signals()
+
             self.control_counter = 0
         self.control_counter += 1
 
@@ -300,7 +308,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.9, self.robots[agent].data.root_link_pos_w[:, 2] > 1.1)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
-            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
+            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
             x_exceed_bounds = torch.logical_or(
                 self.robots[agent].data.root_link_pos_w[:, 0] - self.terrain.env_origins[:, 0] < -self.xy_boundary,
@@ -915,6 +923,59 @@ class SwarmVelEnv(DirectMARLEnv):
                     for p in range(self.num_vis_point):
                         frac = float(p + 1) / (self.num_vis_point + 1)
                         self.rel_pos_visualizers[j][p].visualize(translations=orig[mask] + rel_pos[mask] * frac)
+
+    def _publish_debug_signals(self):
+
+        t = self._get_ros_timestamp()
+        agent = "drone_0"
+        env_id = 0
+
+        # Publish states
+        state = self.robots[agent].data.root_state_w[env_id]
+        p_odom = state[:3].cpu().numpy()
+        q_odom = state[3:7].cpu().numpy()
+        v_odom = state[7:10].cpu().numpy()
+        w_odom = state[10:13].cpu().numpy()
+
+        odom_msg = Odometry()
+        odom_msg.header.stamp = t
+        odom_msg.header.frame_id = "world"
+        odom_msg.child_frame_id = "base_link"
+        odom_msg.pose.pose.position.x = float(p_odom[0])
+        odom_msg.pose.pose.position.y = float(p_odom[1])
+        odom_msg.pose.pose.position.z = float(p_odom[2])
+        odom_msg.pose.pose.orientation.w = float(q_odom[0])
+        odom_msg.pose.pose.orientation.x = float(q_odom[1])
+        odom_msg.pose.pose.orientation.y = float(q_odom[2])
+        odom_msg.pose.pose.orientation.z = float(q_odom[3])
+        odom_msg.twist.twist.linear.x = float(v_odom[0])
+        odom_msg.twist.twist.linear.y = float(v_odom[1])
+        odom_msg.twist.twist.linear.z = float(v_odom[2])
+        odom_msg.twist.twist.angular.x = float(w_odom[0])
+        odom_msg.twist.twist.angular.y = float(w_odom[1])
+        odom_msg.twist.twist.angular.z = float(w_odom[2])
+        self.odom_pub.publish(odom_msg)
+
+        # Publish actions
+        v_desired = self.v_desired[agent][env_id].cpu().numpy()
+
+        v_desired_msg = TwistStamped()
+        v_desired_msg.header.stamp = t
+        v_desired_msg.header.frame_id = "world"
+        v_desired_msg.twist.linear.x = float(v_desired[0])
+        v_desired_msg.twist.linear.y = float(v_desired[1])
+        v_desired_msg.twist.linear.z = float(v_desired[2])
+
+        self.v_desired_pub.publish(v_desired_msg)
+
+    def _get_ros_timestamp(self) -> Time:
+        sim_time = self._sim_step_counter * self.physics_dt
+
+        stamp = Time()
+        stamp.sec = int(sim_time)
+        stamp.nanosec = int((sim_time - stamp.sec) * 1e9)
+
+        return stamp
 
 
 from config import agents
