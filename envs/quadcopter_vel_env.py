@@ -190,9 +190,9 @@ class QuadcopterVelEnv(DirectRLEnv):
             )
 
             self._thrust_desired = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired.unsqueeze(1)), dim=1)
-            
+
             self._publish_debug_signals()
-            
+
             self.control_counter = 0
         self.control_counter += 1
 
@@ -295,6 +295,8 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
+        self.controller.reset(env_ids)
+
         self.p_desired[env_ids] = self.robot.data.root_pos_w[env_ids].clone()
 
         if hasattr(self, "prev_dist_to_goal"):
@@ -389,7 +391,6 @@ class QuadcopterVelEnv(DirectRLEnv):
         v_desired_msg.twist.linear.y = float(v_desired[1])
         v_desired_msg.twist.linear.z = float(v_desired[2])
         self.v_desired_pub.publish(v_desired_msg)
-
 
     def _get_ros_timestamp(self) -> Time:
         sim_time = self._sim_step_counter * self.physics_dt

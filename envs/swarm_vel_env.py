@@ -38,7 +38,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 1.0
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
-    success_reward_weight = 1.0
+    success_reward_weight = 2.0
     time_penalty_weight = 0.0
     mutual_collision_avoidance_reward_weight = 2.0
     max_lin_vel_penalty_weight = 0.0
@@ -623,6 +623,8 @@ class SwarmVelEnv(DirectMARLEnv):
             self.robots[agent].write_joint_state_to_sim(
                 self.robots[agent].data.default_joint_pos[env_ids], self.robots[agent].data.default_joint_vel[env_ids], None, env_ids
             )
+
+            self.controllers[agent].reset(env_ids)
 
             self.p_desired[agent][env_ids] = self.robots[agent].data.root_pos_w[env_ids].clone()
 
