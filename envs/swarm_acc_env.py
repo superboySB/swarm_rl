@@ -73,7 +73,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     episode_length_s = 20.0
     physics_freq = 200.0
     control_freq = 100.0
-    action_freq = 50.0
+    action_freq = 10.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     num_drones = 4  # Number of drones per environment
@@ -104,8 +104,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.state_space = self.history_length * self.transient_state_dim
-        self.a_max = {agent: 3.0 for agent in self.possible_agents}
-        self.v_max = {agent: 1.3 for agent in self.possible_agents}
+        self.a_max = {agent: 13.0 for agent in self.possible_agents}
+        self.v_max = {agent: 2.0 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(

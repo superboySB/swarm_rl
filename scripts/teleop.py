@@ -16,7 +16,7 @@ parser.add_argument(
     help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint; FAST-Quadcopter-Vel; FAST-RGB-Waypoint; FAST-Depth-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--velocity", type=float, default=3.0, help="Velocity of teleoperation.")
+parser.add_argument("--velocity", type=float, default=5.0, help="Velocity of teleoperation.")
 parser.add_argument(
     "--verbosity", type=str, default="INFO", choices=["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"], help="Verbosity level of the custom logger."
 )
