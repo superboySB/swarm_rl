@@ -31,7 +31,7 @@ from utils.controller import Controller
 @configclass
 class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(3.0, -3.0, 40.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 60.0))
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
@@ -43,7 +43,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     mutual_collision_avoidance_reward_weight = 1.0
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.01
+    action_diff_penalty_weight = 0.05
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
@@ -59,14 +59,14 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     migration_goal_range = 5.0  # Range of xy coordinates of the goal in mission "migration"
-    chaotic_goal_range = 3.5  # Range of xy coordinates of the goal in mission "chaotic"
+    chaotic_goal_range = 2.5  # Range of xy coordinates of the goal in mission "chaotic"
     birth_circle_radius = 2.7
 
     # TODO: Improve dirty curriculum
     enable_dirty_curriculum = True
-    curriculum_steps = 300 * 20
-    init_death_penalty_weight = 0.01
-    init_mutual_collision_avoidance_reward_weight = 0.01
+    curriculum_steps = 1e5
+    init_death_penalty_weight = 0.1
+    init_mutual_collision_avoidance_reward_weight = 1.0
     init_action_diff_penalty_weight = 0.001
 
     # Env
@@ -76,8 +76,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     action_freq = 5.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 4  # Number of drones per environment
-    num_drones = 4  # Number of drones per environment
+    num_drones = 5  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
@@ -88,7 +87,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 16 * num_drones
-    state_space = None
+    state_space = history_length * transient_state_dim
 
     # Domain randomization
     enable_domain_randomization = False
@@ -99,6 +98,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     max_collision_experience_buffer_size = 1000
     min_recording_time_before_collision = 0.5
     max_recording_time_before_collision = 2.0
+
     max_experience_state_buffer_size = int(action_freq * episode_length_s + history_length - 1)
     min_recorded_steps_before_collision = int(action_freq * min_recording_time_before_collision)
     max_recorded_steps_before_collision = int(action_freq * max_recording_time_before_collision)
@@ -107,7 +107,6 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
-        self.state_space = self.history_length * self.transient_state_dim
         self.v_max = {agent: 1.5 for agent in self.possible_agents}
 
     # Simulation
@@ -313,7 +312,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.9, self.robots[agent].data.root_link_pos_w[:, 2] > 1.1)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
-            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
+            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
             x_exceed_bounds = torch.logical_or(
                 self.robots[agent].data.root_link_pos_w[:, 0] - self.terrain.env_origins[:, 0] < -self.xy_boundary,
@@ -336,17 +335,9 @@ class SwarmVelEnv(DirectMARLEnv):
 
                 collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
                 collision_died = torch.logical_or(collision_died, collision)
+
             #     self.died[agent_i] = torch.logical_or(self.died[agent_i], collision)
-
             # died_unified = torch.logical_or(died_unified, self.died[agent_i])
-
-        if self.experience_replayed is not None and self.experience_replayed:
-            if self.experience_replay_ids is not None:
-                print("==== Experience Replay Debug Info ====")
-                for env_id in self.experience_replay_ids:
-                    print(f"Env {env_id}: " f"collision_died={bool(collision_died[env_id])}")
-                print("======================================")
-            self.experience_replayed = False
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -395,7 +386,7 @@ class SwarmVelEnv(DirectMARLEnv):
             recorded_frames = experience_states[
                 recorded_frames_idxs, collided_envs.unsqueeze(1).expand(-1, self.cfg.history_length), :, :
             ]  # [num_collided_envs, history_length, num_agents, state_size]
-            # select valid frames which are not all zeros
+            # Select valid frames which are not all zeros
             valid_recorded_frames = recorded_frames[~torch.all(recorded_frames == 0, dim=(1, 2, 3))]
             if valid_recorded_frames.shape[0] > 0:
                 self.collision_experience_buffer.extend(valid_recorded_frames)
@@ -575,7 +566,7 @@ class SwarmVelEnv(DirectMARLEnv):
                     self.ang[idx] = last_rand_ang
 
         if len(mission_2_ids) > 0:
-            rg_min, rg_max = self.cfg.chaotic_goal_range, 1.3 * self.cfg.chaotic_goal_range
+            rg_min, rg_max = self.cfg.chaotic_goal_range, 1.5 * self.cfg.chaotic_goal_range
             self.rand_rg[mission_2_ids] = torch.rand(len(mission_2_ids), device=self.device) * (rg_max - rg_min) + rg_min
             init_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
             goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
@@ -612,7 +603,7 @@ class SwarmVelEnv(DirectMARLEnv):
         self.experience_replayed = (
             self.cfg.enable_experience_replay and random.random() < self.cfg.collision_experience_replay_prob and len(self.collision_experience_buffer) > 0
         )
-        # experience replay: set initial state and goal based on a randomly chosen state from the failure buffer, and update the observation and state buffers
+        # Experience replay: set initial state and goal based on a randomly chosen state from the failure buffer, and update the observation and state buffers
         if self.experience_replayed:
             self.experience_replay_states = torch.stack(
                 [random.choice(self.collision_experience_buffer) for _ in env_ids]
