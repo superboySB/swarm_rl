@@ -10,16 +10,16 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class SwarmVelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 20
-    max_iterations = 1000
-    save_interval = 50
+    num_steps_per_env = 100
+    max_iterations = 100000
+    save_interval = 20
     experiment_name = ""
     clip_actions = 1.0
     empirical_normalization = True
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.6,
-        actor_hidden_dims=[2048, 2048, 2048, 1024, 1024, 1024, 512],
-        critic_hidden_dims=[2048, 2048, 2048, 1024, 1024, 1024, 512],
+        init_noise_std=1.0,
+        actor_hidden_dims=[1024, 1024, 1024, 512, 512, 256],
+        critic_hidden_dims=[1024, 1024, 1024, 512, 512, 256],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(
@@ -28,7 +28,7 @@ class SwarmVelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.0005,
         num_learning_epochs=5,
-        num_mini_batches=2,
+        num_mini_batches=4,
         learning_rate=2.0e-4,
         schedule="fixed",
         gamma=0.99,
@@ -70,8 +70,8 @@ class SwarmAccPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 @configclass
 class SwarmBodyratePPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 350
-    max_iterations = 1000
+    num_steps_per_env = 250
+    max_iterations = 100000
     save_interval = 20
     experiment_name = ""
     clip_actions = 1.0

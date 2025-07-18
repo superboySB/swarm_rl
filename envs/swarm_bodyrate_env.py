@@ -33,32 +33,34 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     viewer = ViewerCfg(eye=(3.0, -3.0, 60.0))
 
     # Reward weights
-    to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 0.0
-    approaching_goal_reward_weight = 2.5
+    to_live_reward_weight = 1.0  # 《活着》
+    death_penalty_weight = 1.0
+    approaching_goal_reward_weight = 0.0
     angle_to_goal_penalty_weight = 0.0
     dist_to_goal_reward_weight = 0.0
-    success_reward_weight = 10.0
+    success_reward_weight = 100.0
     time_penalty_weight = 0.0
     altitude_maintenance_reward_weight = 0.0  # Reward for maintaining height close to flight_altitude
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
-    mutual_collision_avoidance_reward_weight = 5.0
-    max_lin_vel_penalty_weight = 1.0
+    mutual_collision_avoidance_reward_weight = 0.1
+    max_lin_vel_penalty_weight = 0.1
     ang_vel_penalty_weight = 0.0
-    ang_vel_diff_penalty_weight = 0.0
-    thrust_diff_penalty_weight = 0.0
+    ang_vel_diff_penalty_weight = 0.001
+    thrust_diff_penalty_weight = 0.001
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
     speed_deviation_tolerance = 0.5
-    max_lin_vel_penalty_scale = 2.0
 
-    flight_altitude = 3.0  # Desired flight altitude
+    max_lin_vel_penalty_scale = 1.7917
+    max_lin_vel_clip = 3.0
+
+    flight_altitude = 20.0  # Desired flight altitude
     safe_dist = 1.3
     collide_dist = 0.6
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    success_distance_threshold = 0.5  # Distance threshold for considering goal reached
+    success_distance_threshold = 1.0  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     migration_goal_range = 5.0  # Range of xy coordinates of the goal in mission "migration"
     chaotic_goal_range = 2.5  # Range of xy coordinates of the goal in mission "chaotic"
@@ -77,7 +79,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     action_freq = 50.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 3  # Number of drones per environment
+    num_drones = 5  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
@@ -106,9 +108,10 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.state_space = self.history_length * self.transient_state_dim
         self.v_desired = {agent: 2.0 for agent in self.possible_agents}
-        self.v_max = {agent: 3.0 for agent in self.possible_agents}
-        self.thrust_to_weight = {agent: 3.0 for agent in self.possible_agents}
-        self.w_max = {agent: 10.0 for agent in self.possible_agents}
+        self.v_max = {agent: 2.0 for agent in self.possible_agents}
+        self.thrust_to_weight = {agent: 4.0 for agent in self.possible_agents}
+        # self.w_max = {agent: 10.0 for agent in self.possible_agents}  # 角速度
+        self.w_max = {agent: 0.05 for agent in self.possible_agents}    # 力矩
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -261,18 +264,24 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         for agent in self.possible_agents:
             self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
-            self.thrusts_desired_normalized[agent] = (self.actions[agent][:, 0] + 1.0) / 2
+            # self.thrusts_desired_normalized[agent] = (self.actions[agent][:, 0] + 1.0) / 2
+            self.thrusts_desired_normalized[agent] = self.actions[agent][:, 0]
             self.w_desired_normalized[agent] = self.actions[agent][:, 1:]
 
             self.thrusts_desired[agent][:, 0, 2] = self.cfg.thrust_to_weight[agent] * self.robot_weights[agent] * self.thrusts_desired_normalized[agent]
             self.w_desired[agent] = self.cfg.w_max[agent] * self.w_desired_normalized[agent]
 
+            # self.thrusts_desired[agent][:, 0, 2] = self.robot_weights[agent] * torch.ones_like(self.thrusts_desired_normalized[agent])
+            # self.w_desired[agent] = torch.zeros_like(self.w_desired_normalized[agent])
+            # # self.w_desired[agent][:, 2] = 0.05
+
     def _apply_action(self) -> None:
         if self.control_counter % self.cfg.control_decimation == 0:
             for agent in self.possible_agents:
-                self.m_desired[agent][:, 0, :] = bodyrate_control_without_thrust(
-                    self.robots[agent].data.root_ang_vel_w, self.w_desired[agent], self.robot_inertias[agent], self.kPw[agent]
-                )
+                # self.m_desired[agent][:, 0, :] = bodyrate_control_without_thrust(
+                #     self.robots[agent].data.root_ang_vel_w, self.w_desired[agent], self.robot_inertias[agent], self.kPw[agent]
+                # )
+                self.m_desired[agent][:, 0, :] = self.w_desired[agent]  # 动作后三维为三轴力矩
 
             self._publish_debug_signals()
 
@@ -287,9 +296,9 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         collision_died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
 
-            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < -0.1, self.robots[agent].data.root_link_pos_w[:, 2] > 6.0)
+            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 5.0, self.robots[agent].data.root_link_pos_w[:, 2] > 35.0)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
-            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
+            # self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
             x_exceed_bounds = torch.logical_or(
                 self.robots[agent].data.root_link_pos_w[:, 0] - self.terrain.env_origins[:, 0] < -self.xy_boundary,
@@ -299,7 +308,8 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 self.robots[agent].data.root_link_pos_w[:, 1] - self.terrain.env_origins[:, 1] < -self.xy_boundary,
                 self.robots[agent].data.root_link_pos_w[:, 1] - self.terrain.env_origins[:, 1] > self.xy_boundary,
             )
-            self.died[agent] = torch.logical_or(self.died[agent], torch.logical_or(x_exceed_bounds, y_exceed_bounds))
+            # self.died[agent] = torch.logical_or(self.died[agent], torch.logical_or(x_exceed_bounds, y_exceed_bounds))
+            self.died[agent] = torch.logical_or(z_exceed_bounds, torch.logical_or(x_exceed_bounds, y_exceed_bounds))
 
             died_unified = torch.logical_or(died_unified, self.died[agent])
 
@@ -341,19 +351,17 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         history_state_tensor = torch.stack(self.history_state_buffer, dim=0)  # [num_frames, num_envs, num_agents, state_size]
 
-        mask = collision_died  # [num_envs] bool indicating which environments collided
-        if mask.any() and len(self.history_state_buffer) >= self.cfg.max_time_before_failure * self.cfg.action_freq:
-            collided_envs = torch.nonzero(mask, as_tuple=True)[0]
-            frame_indices = torch.randint(
-                0, len(self.history_state_buffer) - int(self.cfg.min_time_before_failure * self.cfg.action_freq), size=(collided_envs.shape[0],)
-            )
-            failure_states = history_state_tensor[frame_indices, collided_envs]
+        # mask = collision_died  # [num_envs] bool indicating which environments collided
+        # if mask.any() and len(self.history_state_buffer) >= self.cfg.max_informed_steps:
+        #     collided_envs = torch.nonzero(mask, as_tuple=True)[0]
+        #     frame_indices = torch.randint(0, len(self.history_state_buffer) - self.cfg.min_informed_steps, size=(collided_envs.shape[0],))
+        #     failure_states = history_state_tensor[frame_indices, collided_envs]
 
-            non_empty_failure_states = failure_states[~torch.all(failure_states == 0, dim=(1, 2))]
-            if non_empty_failure_states.shape[0] > 0:
-                self.failure_buffer.extend(non_empty_failure_states)
-                while len(self.failure_buffer) > self.cfg.max_failure_buffer_size:
-                    self.failure_buffer.pop(0)
+        #     non_empty_failure_states = failure_states[~torch.all(failure_states == 0, dim=(1, 2))]
+        #     if non_empty_failure_states.shape[0] > 0:
+        #         self.failure_buffer.extend(non_empty_failure_states)
+        #         while len(self.failure_buffer) > self.cfg.max_failure_buffer_size:
+        #             self.failure_buffer.pop(0)
 
         history_state_tensor[:, torch.nonzero(died_unified, as_tuple=True)[0]] = 0.0
         self.history_state_buffer = [history_state_tensor[i] for i in range(history_state_tensor.shape[0])]
@@ -433,9 +441,10 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
             lin_vel = torch.linalg.norm(self.robots[agent].data.root_lin_vel_w, dim=1)
             # max_lin_vel_penalty = 1.0 / (1.0 + torch.exp(52.0 * (self.cfg.v_max[agent] - lin_vel)))
+            lin_vel_exceed = lin_vel - self.cfg.v_max[agent]
             max_lin_vel_penalty = torch.where(
                 lin_vel > self.cfg.v_max[agent],
-                torch.exp(self.cfg.max_lin_vel_penalty_scale * (lin_vel - self.cfg.v_max[agent])) - 1.0,
+                torch.exp(self.cfg.max_lin_vel_penalty_scale * torch.where(lin_vel_exceed > self.cfg.max_lin_vel_clip, self.cfg.max_lin_vel_clip, lin_vel_exceed)) - 1.0,
                 torch.zeros(self.num_envs, device=self.device),
             )
             max_lin_vel_reward = -max_lin_vel_penalty

@@ -1,31 +1,57 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <root>
  <tabbed_widget parent="main_window" name="Main Window">
-  <Tab containers="1" tab_name="v">
+  <Tab containers="1" tab_name="tab1">
    <Container>
-    <DockSplitter orientation="-" sizes="0.333066;0.333868;0.333066" count="3">
+    <DockSplitter count="3" sizes="0.333712;0.332577;0.333712" orientation="-">
      <DockArea name="...">
-      <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-       <range top="1.759328" right="28.460000" left="8.460000" bottom="-1.765088"/>
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="4.200000" bottom="-4.200000" left="11.150000" right="21.150000"/>
        <limitY/>
-       <curve color="#17becf" name="/swarm_vel_env/v_desired/twist/linear/x"/>
-       <curve color="#1f77b4" name="/swarm_vel_env/odom/twist/twist/linear/x"/>
+       <curve color="#ff7f0e" name="/swarm_vel_env/v_desired/twist/linear/x"/>
+       <curve color="#9467bd" name="/swarm_vel_env/odom/twist/twist/linear/x"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-       <range top="1.522780" right="28.460000" left="8.460000" bottom="-0.903273"/>
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="4.201380" bottom="-4.256585" left="11.150000" right="21.150000"/>
        <limitY/>
-       <curve color="#bcbd22" name="/swarm_vel_env/v_desired/twist/linear/y"/>
-       <curve color="#d62728" name="/swarm_vel_env/odom/twist/twist/linear/y"/>
+       <curve color="#f14cc1" name="/swarm_vel_env/v_desired/twist/linear/y"/>
+       <curve color="#17becf" name="/swarm_vel_env/odom/twist/twist/linear/y"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-       <range top="1.723203" right="28.460000" left="8.460000" bottom="-0.042029"/>
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="5.798276" bottom="-0.141421" left="11.150000" right="21.150000"/>
        <limitY/>
-       <curve color="#1ac938" name="speed_des"/>
-       <curve color="#ff7f0e" name="speed"/>
+       <curve color="#bcbd22" name="speed"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab containers="1" tab_name="tab2">
+   <Container>
+    <DockSplitter count="3" sizes="0.333712;0.332577;0.333712" orientation="-">
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="243.433953" bottom="234.794685" left="11.150000" right="21.150000"/>
+       <limitY/>
+       <curve color="#1f77b4" name="/swarm_vel_env/odom/pose/pose/position/x"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="-221.751446" bottom="-229.595203" left="11.150000" right="21.150000"/>
+       <limitY/>
+       <curve color="#d62728" name="/swarm_vel_env/odom/pose/pose/position/y"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="1.000014" bottom="0.999445" left="11.150000" right="21.150000"/>
+       <limitY/>
+       <curve color="#1ac938" name="/swarm_vel_env/odom/pose/pose/position/z"/>
       </plot>
      </DockArea>
     </DockSplitter>
@@ -38,7 +64,7 @@
  <!-- - - - - - - - - - - - - - - -->
  <Plugins>
   <plugin ID="DataLoad CSV">
-   <parameters delimiter="0" time_axis=""/>
+   <parameters time_axis="" delimiter="0"/>
   </plugin>
   <plugin ID="DataLoad MCAP"/>
   <plugin ID="DataLoad ROS2 bags">
@@ -56,7 +82,7 @@
    <max_array_size value="100"/>
    <boolean_strings_to_number value="true"/>
    <remove_suffix_from_strings value="true"/>
-   <selected_topics value="/swarm_vel_env/odom;/swarm_vel_env/v_desired"/>
+   <selected_topics value="/swarm_vel_env/m_desired;/swarm_vel_env/odom;/swarm_vel_env/v_desired"/>
   </plugin>
   <plugin ID="UDP Server"/>
   <plugin ID="WebSocket Server"/>
@@ -77,20 +103,11 @@
  <customMathEquations>
   <snippet name="speed">
    <global></global>
-   <function>return math.sqrt(value * value + v1 * v1 + v2 * v2)</function>
+   <function>return math.sqrt(value*value+v1*v1+v2*v2)</function>
    <linked_source>/swarm_vel_env/odom/twist/twist/linear/x</linked_source>
    <additional_sources>
     <v1>/swarm_vel_env/odom/twist/twist/linear/y</v1>
     <v2>/swarm_vel_env/odom/twist/twist/linear/z</v2>
-   </additional_sources>
-  </snippet>
-  <snippet name="speed_des">
-   <global></global>
-   <function>return math.sqrt(value * value + v1 * v1 + v2 * v2)</function>
-   <linked_source>/swarm_vel_env/v_desired/twist/linear/x</linked_source>
-   <additional_sources>
-    <v1>/swarm_vel_env/v_desired/twist/linear/y</v1>
-    <v2>/swarm_vel_env/v_desired/twist/linear/z</v2>
    </additional_sources>
   </snippet>
  </customMathEquations>
