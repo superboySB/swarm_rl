@@ -41,8 +41,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    # mutual_collision_avoidance_reward_weight = 25.0  # Stage 2
+    # mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
+    mutual_collision_avoidance_reward_weight = 25.0  # Stage 2
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_diff_penalty_weight = 0.1
@@ -87,11 +87,11 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     enable_domain_randomization = False
 
     # Experience replay
-    enable_experience_replay = False
-    collision_experience_replay_prob = 0.9
+    enable_experience_replay = True
+    collision_experience_replay_prob = 0.77
     max_collision_experience_buffer_size = 520
-    min_recording_time_before_collision = 0.3
-    max_recording_time_before_collision = 1.3
+    min_recording_time_before_collision = 0.4
+    max_recording_time_before_collision = 2.0
 
     max_experience_state_buffer_size = int(action_freq * episode_length_s + history_length - 1)
     min_recorded_steps_before_collision = int(action_freq * min_recording_time_before_collision)
@@ -659,7 +659,8 @@ class SwarmAccEnv(DirectMARLEnv):
 
             if self.experience_replay_states is not None:
                 # Select the last frame of the experience replay state to initialize the robot state
-                states_ = self.experience_replay_states[:, -1, i, : self.cfg.transient_state_dim / self.cfg.num_drones].clone()  # [num_envs_to_reset, state_dim]
+                state_dim = int(self.cfg.transient_state_dim / self.cfg.num_drones)
+                states_ = self.experience_replay_states[:, -1, i, :state_dim].clone()  # [num_envs_to_reset, state_dim]
                 root_pos_w_ = states_[:, 0:3] + self.terrain.env_origins[env_ids]
                 init_state[env_ids, 0:3] = root_pos_w_
                 init_state[env_ids, 3:13] = states_[:, 6:16]  # Quats, lin_vels, ang_vels
@@ -825,9 +826,8 @@ class SwarmAccEnv(DirectMARLEnv):
             if self.reset_env_ids.any():
                 if self.experience_replayed and self.experience_replay_states is not None:
                     # Use the experience replay states to initialize the observation buffer
-                    replay_obs_ = (
-                        self.experience_replay_states[:, :, i, self.cfg.transient_state_dim / self.cfg.num_drones :].permute(1, 0, 2).contiguous()
-                    )  # [history_length, num_envs_to_reset, obs_dim]
+                    state_dim = int(self.cfg.transient_state_dim / self.cfg.num_drones)
+                    replay_obs_ = self.experience_replay_states[:, :, i, state_dim:].permute(1, 0, 2).contiguous()  # [history_length, num_envs_to_reset, obs_dim]
 
                     # Fill the all zero frames with the last non-zero frame
                     mask_zero_ = replay_obs_.abs().sum(-1) == 0  # [history_length, num_envs_to_reset]
@@ -876,8 +876,9 @@ class SwarmAccEnv(DirectMARLEnv):
         if self.reset_env_ids.any():
             if self.experience_replayed and self.experience_replay_states is not None:
                 # Use the experience replay states to initialize the state buffer
+                state_dim = int(self.cfg.transient_state_dim / self.cfg.num_drones)
                 replay_states_ = (
-                    self.experience_replay_states[..., : self.cfg.transient_state_dim / self.cfg.num_drones].permute(1, 0, 2, 3).contiguous().flatten(start_dim=2)
+                    self.experience_replay_states[..., :state_dim].permute(1, 0, 2, 3).contiguous().flatten(start_dim=2)
                 )  # [history_length, num_envs_to_reset, state_dim * num_agents]
 
                 # Fill the all zero frames with the last non-zero frame
