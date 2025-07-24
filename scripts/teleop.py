@@ -16,6 +16,7 @@ parser.add_argument(
     help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint; FAST-Quadcopter-Vel; FAST-Quadcopter-Acc; FAST-RGB-Waypoint; FAST-Depth-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument("--acceleration", type=float, default=4.0, help="Acceleration of teleoperation.")
 parser.add_argument("--velocity", type=float, default=4.0, help="Velocity of teleoperation.")
 parser.add_argument(
     "--verbosity", type=str, default="INFO", choices=["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"], help="Verbosity level of the custom logger."
@@ -31,8 +32,10 @@ elif args_cli.task in ["FAST-Swarm-Bodyrate", "FAST-Swarm-Vel", "FAST-Swarm-Wayp
     raise ValueError("Swarm envs are not supported for keyboard teleoperation due to the observation space limitation of Isaaclab 'multi_agent_to_single_agent' API #^#")
 elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
-elif args_cli.task not in ["FAST-Quadcopter-Waypoint", "FAST-Quadcopter-Vel"]:
-    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint; FAST-Quadcopter-Vel; FAST-RGB-Waypoint; FAST-Depth-Waypoint.")
+elif args_cli.task not in ["FAST-Quadcopter-Waypoint", "FAST-Quadcopter-Vel", "FAST-Quadcopter-Acc"]:
+    raise ValueError(
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint; FAST-Quadcopter-Vel; FAST-Quadcopter-Acc; FAST-RGB-Waypoint; FAST-Depth-Waypoint."
+    )
 
 # Launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -50,7 +53,7 @@ import numpy as np
 import rclpy
 import torch
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_vel_env, quadcopter_acc_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_waypoint_env
+from envs import camera_waypoint_env, quadcopter_waypoint_env, quadcopter_vel_env, quadcopter_acc_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate
@@ -167,16 +170,16 @@ def main():
             elif args_cli.task.endswith("Acc"):
                 actions = torch.zeros(env_cfg.action_space, device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1)
                 if delta_pose[0] > 0:
-                    actions[:, 0] = args_cli.velocity
+                    actions[:, 0] = args_cli.acceleration
                 elif delta_pose[0] < 0:
-                    actions[:, 0] = -args_cli.velocity
+                    actions[:, 0] = -args_cli.acceleration
                 if delta_pose[1] > 0:
-                    actions[:, 1] = args_cli.velocity
+                    actions[:, 1] = args_cli.acceleration
                 elif delta_pose[1] < 0:
-                    actions[:, 1] = -args_cli.velocity
+                    actions[:, 1] = -args_cli.acceleration
 
-                speed = torch.norm(actions, dim=1, keepdim=True)
-                clip_scale = torch.where(speed > env_cfg.v_max, env_cfg.v_max / (speed + 1e-6), torch.ones_like(speed))
+                norm = torch.norm(actions, dim=1, keepdim=True)
+                clip_scale = torch.where(norm > env_cfg.v_max, env_cfg.v_max / (norm + 1e-6), torch.ones_like(norm))
                 actions *= clip_scale
 
             else:
@@ -217,7 +220,7 @@ def main():
                     p_desired = obs["odom"][:, :3].clone()
                 reset_env_ids = (reset_terminated | reset_time_outs).nonzero(as_tuple=False).squeeze(-1)
                 p_desired[reset_env_ids] = p_odom[reset_env_ids].clone()
-            elif args_cli.task.endswith("Vel"):
+            elif args_cli.task.endswith("Vel") or args_cli.task.endswith("Acc"):
                 pass
             else:
                 p_odom = {drone: obs[drone][:, :3] for drone in env_cfg.possible_agents}

@@ -25,7 +25,7 @@ from utils.controller import Controller
 
 
 @configclass
-class QuadcopterVelEnvCfg(DirectRLEnvCfg):
+class QuadcopterAccEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
@@ -104,10 +104,10 @@ class QuadcopterVelEnvCfg(DirectRLEnvCfg):
     debug_vis_action = True
 
 
-class QuadcopterVelEnv(DirectRLEnv):
-    cfg: QuadcopterVelEnvCfg
+class QuadcopterAccEnv(DirectRLEnv):
+    cfg: QuadcopterAccEnvCfg
 
-    def __init__(self, cfg: QuadcopterVelEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: QuadcopterAccEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
@@ -156,7 +156,7 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.visualize_new_cmd = False
 
         # ROS2
-        self.node = Node("quadcopter_vel_env", namespace="quadcopter_vel_env")
+        self.node = Node("quadcopter_acc_env", namespace="quadcopter_acc_env")
         self.odom_pub = self.node.create_publisher(Odometry, "odom", 10)
         self.p_desired_pub = self.node.create_publisher(TwistStamped, "p_desired", 10)
         self.v_desired_pub = self.node.create_publisher(TwistStamped, "v_desired", 10)
@@ -177,11 +177,6 @@ class QuadcopterVelEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        # self.v_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
-        # self.v_desired[:, :2] = self.v_xy_desired_normalized * self.cfg.v_max
-        # self.p_desired[:, :2] = self.robot.data.root_pos_w[:, :2] + self.v_desired[:, :2] * self.step_dt
-        # # self.p_desired[:, :2] += self.v_desired[:, :2] * self.step_dt
-
         self.a_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
         a_xy_desired = self.a_xy_desired_normalized * self.cfg.a_max
         norm_xy = torch.norm(a_xy_desired, dim=1, keepdim=True)
@@ -189,7 +184,6 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.a_desired[:, :2] = a_xy_desired / clip_scale
 
     def _apply_action(self):
-
         self.prev_v_desired = self.v_desired.clone()
         self.v_desired[:, :2] += self.a_desired[:, :2] * self.physics_dt
         speed_xy = torch.norm(self.v_desired[:, :2], dim=1, keepdim=True)
@@ -197,12 +191,9 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.v_desired[:, :2] /= clip_scale
 
         self.a_after_v_clip = (self.v_desired - self.prev_v_desired) / self.physics_dt
-        self.p_desired[:, :2] += (
-            self.prev_v_desired[:, :2] * self.physics_dt + 0.5 * self.a_after_v_clip[:, :2] * self.physics_dt**2
-        )
+        self.p_desired[:, :2] += self.prev_v_desired[:, :2] * self.physics_dt + 0.5 * self.a_after_v_clip[:, :2] * self.physics_dt**2
 
         if self.control_counter % self.cfg.control_decimation == 0:
-
             state_desired = torch.cat(
                 (
                     self.p_desired,
@@ -211,9 +202,9 @@ class QuadcopterVelEnv(DirectRLEnv):
                     self.a_after_v_clip,
                     self.j_desired,
                     self.yaw_desired,
-                    self.yaw_dot_desired
+                    self.yaw_dot_desired,
                 ),
-                dim=1
+                dim=1,
             )
 
             self.a_desired_total, self.thrust_desired, self.q_desired, self.w_desired, self.m_desired = self.controller.get_control(
@@ -232,9 +223,7 @@ class QuadcopterVelEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 1.5)
         ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
-        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 90.0)
-
-        # print(ang_between_z_body_and_z_world)
+        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -331,6 +320,7 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.controller.reset(env_ids)
 
         self.p_desired[env_ids] = self.robot.data.root_pos_w[env_ids].clone()
+        self.v_desired[env_ids] = torch.zeros_like(self.v_desired[env_ids])
 
         if hasattr(self, "prev_dist_to_goal"):
             self.prev_dist_to_goal[env_ids] = torch.linalg.norm(self.goal[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1)
@@ -414,7 +404,6 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.odom_pub.publish(odom_msg)
 
         # Publish actions
-        p_desired = self.p_desired[env_id].cpu().numpy()
         v_desired = self.v_desired[env_id].cpu().numpy()
 
         v_desired_msg = TwistStamped()
@@ -439,11 +428,11 @@ from config import agents
 
 
 gym.register(
-    id="FAST-Quadcopter-Vel",
-    entry_point=QuadcopterVelEnv,
+    id="FAST-Quadcopter-Acc",
+    entry_point=QuadcopterAccEnv,
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": QuadcopterVelEnvCfg,
+        "env_cfg_entry_point": QuadcopterAccEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:quadcopter_sb3_ppo_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:quadcopter_skrl_ppo_cfg.yaml",
     },

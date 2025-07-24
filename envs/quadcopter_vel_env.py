@@ -201,9 +201,7 @@ class QuadcopterVelEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 1.5)
         ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
-        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 90.0)
-
-        # print(ang_between_z_body_and_z_world)
+        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
