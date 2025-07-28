@@ -76,7 +76,7 @@ def main():
 
     # Parse configuration
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric)
-    env_cfg.enable_dirty_curriculum = False
+    env_cfg.fix_range = True
     agent_cfg = load_cfg_from_registry(args_cli.task, "sb3_cfg_entry_point")
 
     log_root_path = os.path.join("outputs", "sb3", args_cli.task, "flowline")

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import gymnasium as gym
-import copy
 import math
 import random
-import time
 import torch
 from collections.abc import Sequence
 from loguru import logger
@@ -42,19 +40,20 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
     # mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    mutual_collision_avoidance_reward_weight = 25.0  # Stage 2
+    mutual_collision_avoidance_reward_weight = 20.0  # Stage 2
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_diff_penalty_weight = 0.2
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
-    mutual_collision_avoidance_reward_scale = 1.0  # Correspond to safe_dist of 1.3, collide_dist of 0.6
+    mutual_collision_avoidance_reward_scale = 1.0  # Correspond to safe_dist of 1.5, collide_dist of 0.6
     # mutual_collision_avoidance_reward_scale = 0.77  # Correspond to safe_dist of 1.5, collide_dist of 0.6
     # mutual_collision_avoidance_reward_scale = 0.5  # Correspond to safe_dist of 3.0, collide_dist of 0.6
     max_lin_vel_penalty_scale = 2.0
 
-    flight_range = 6.0
+    fix_range = False
+    flight_range = 5.0
     flight_altitude = 1.0  # Desired flight altitude
     safe_dist = 1.5
     collide_dist = 0.6
@@ -64,7 +63,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
 
     # Env
-    episode_length_s = 20.0
+    episode_length_s = 30.0
     physics_freq = 200.0
     control_freq = 100.0
     action_freq = 20.0
@@ -101,8 +100,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
-        self.a_max = {agent: 10.0 for agent in self.possible_agents}
-        self.v_max = {agent: 4.0 for agent in self.possible_agents}
+        self.a_max = {agent: 8.0 for agent in self.possible_agents}
+        self.v_max = {agent: 3.0 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -594,7 +593,10 @@ class SwarmAccEnv(DirectMARLEnv):
 
         if len(mission_1_ids) > 0:
             r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0]
-            r_min = r_max / 2.0
+            if self.cfg.fix_range:
+                r_min = r_max
+            else:
+                r_min = r_max / 1.5
             self.rand_r[mission_1_ids] = torch.rand(len(mission_1_ids), device=self.device) * (r_max - r_min) + r_min
 
             for idx in mission_1_ids.tolist():
@@ -614,7 +616,10 @@ class SwarmAccEnv(DirectMARLEnv):
 
         if len(mission_2_ids) > 0:
             rg_max = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0]
-            rg_min = rg_max / 2.0
+            if self.cfg.fix_range:
+                rg_min = rg_max
+            else:
+                rg_min = rg_max / 1.5
             self.rand_rg[mission_2_ids] = torch.rand(len(mission_2_ids), device=self.device) * (rg_max - rg_min) + rg_min
             init_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
             goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
@@ -735,7 +740,14 @@ class SwarmAccEnv(DirectMARLEnv):
             if success_i.any():
                 self.reset_goal_timer[agent][success_i] += self.step_dt
 
-            reset_goal_idx = (self.reset_goal_timer[agent] > self.cfg.goal_reset_delay).nonzero(as_tuple=False).squeeze(-1)
+            reset_goal_idx = (
+                (
+                    self.reset_goal_timer[agent]
+                    > torch.rand(self.num_envs, device=self.device) * (5 * self.cfg.goal_reset_delay - self.cfg.goal_reset_delay) + self.cfg.goal_reset_delay
+                )
+                .nonzero(as_tuple=False)
+                .squeeze(-1)
+            )
             if len(reset_goal_idx) > 0:
                 mission_0_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 0]  # The migration mission
                 mission_1_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 1]  # The crossover mission
