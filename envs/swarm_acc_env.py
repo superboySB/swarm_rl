@@ -65,13 +65,13 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     lowpass_filter_cutoff_freq = 10000.0
-    torque_ctrl_delay_s = 0.02
+    torque_ctrl_delay_s = 0.0
 
     max_visible_distance = 5.0
     max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
 
     # Domain randomization
-    enable_domain_randomization = True
+    enable_domain_randomization = False
     max_dist_noise_std = 0.5
     max_bearing_noise_std = 0.2
     drop_prob = 0.2
@@ -372,7 +372,6 @@ class SwarmAccEnv(DirectMARLEnv):
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died_unified = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        collision_died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
 
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.9, self.robots[agent].data.root_link_pos_w[:, 2] > 1.1)

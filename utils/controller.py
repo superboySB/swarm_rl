@@ -9,8 +9,8 @@ class Controller:
     def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor, num_envs: int):
         # Params
         self.kPp = torch.tensor([3.0, 3.0, 10.0], dtype=torch.float32, device=gravity.device)
-        self.kPv = torch.tensor([3.0, 3.0, 10.0], dtype=torch.float32, device=gravity.device)
-        self.kPR = torch.tensor([10.0, 10.0, 20.0], dtype=torch.float32, device=gravity.device)
+        self.kPv = torch.tensor([0.6, 0.6, 10.0], dtype=torch.float32, device=gravity.device)
+        self.kPR = torch.tensor([20.0, 20.0, 20.0], dtype=torch.float32, device=gravity.device)
         self.kPw = torch.tensor([0.02, 0.0125, 0.0125], dtype=torch.float32, device=gravity.device)
         self.kIw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)
         self.kDw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)
@@ -21,8 +21,8 @@ class Controller:
 
         self.K_min_norm_collec_acc = 3
         self.K_max_ang = 45
-        self.K_max_bodyrates_feedback = 4
-        self.K_max_angular_acc = 60
+        self.K_max_bodyrates_feedback = 8
+        self.K_max_angular_acc = 120
 
         self.step_dt = step_dt
         self.gravity = gravity.to(dtype=torch.float32)
@@ -194,11 +194,9 @@ def compute_pid_error_acc(
     p_odom: torch.Tensor, v_odom: torch.Tensor, p_desired: torch.Tensor, v_desired: torch.Tensor, kPp: torch.Tensor, kPv: torch.Tensor
 ) -> torch.Tensor:
 
-    # pos_error = torch.where(torch.isnan(p_desired), torch.zeros_like(p_desired, dtype=torch.float32), torch.clamp(p_desired - p_odom, -1.0, 1.0))
-    pos_error = torch.where(torch.isnan(p_desired), torch.zeros_like(p_desired, dtype=torch.float32), p_desired - p_odom)
+    pos_error = torch.where(torch.isnan(p_desired), torch.zeros_like(p_desired, dtype=torch.float32), torch.clamp(p_desired - p_odom, -1.0, 1.0))
 
-    # vel_error = torch.clamp((v_desired + kPp * pos_error) - v_odom, -1.0, 1.0)
-    vel_error = (v_desired + kPp * pos_error) - v_odom
+    vel_error = torch.clamp((v_desired + kPp * pos_error) - v_odom, -1.0, 1.0)
 
     acc_error = kPv * vel_error
 
