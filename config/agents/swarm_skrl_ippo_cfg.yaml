@@ -51,11 +51,11 @@ memory:
 agent:
   class: IPPO
   shared_parameters: True
-  # rollouts: 100  # 10 steps/sec for waypoint envs
-  # rollouts: 150  # 50 steps/sec for bodyrate envs
-  rollouts: 100  # 20 steps/sec for ideal velocity envs
+  rollouts: 100  # 20 steps/sec for ideal acceleration envs
   learning_epochs: 5
-  mini_batches: 4
+  mini_batches: 65  # RTX 4090: 13000 envs, 65 mini-batches
+  # mini_batches: 35  # RTX 4070 Ti SUPER: 7000 envs, 35 mini-batches
+  # mini_batches: 15  # RTX 4080 Laptop: 3000 envs, 15 mini-batches
   discount_factor: 0.99
   lambda: 0.95
   learning_rate: 1.0e-04
