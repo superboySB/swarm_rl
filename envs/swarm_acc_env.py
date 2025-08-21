@@ -40,11 +40,11 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     approaching_goal_reward_weight = 2.5
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
-    # mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    mutual_collision_avoidance_reward_weight = 40.0  # Stage 2
+    mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
+    # mutual_collision_avoidance_reward_weight = 40.0  # Stage 2
     ang_vel_penalty_weight = 0.0
     action_norm_penalty_weight = 0.0
-    action_norm_near_goal_penalty_weight = 2.0
+    action_norm_near_goal_penalty_weight = 5.0
     action_diff_penalty_weight = 0.0
 
     # Exponential decay factors and tolerances
@@ -71,10 +71,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
 
     # Domain randomization
-    enable_domain_randomization = False
+    enable_domain_randomization = True
     max_dist_noise_std = 0.5
-    max_bearing_noise_std = 0.2
-    drop_prob = 0.2
+    max_bearing_noise_std = 0.05
+    drop_prob = 0.3
 
     # Env
     episode_length_s = 30.0
@@ -105,7 +105,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.a_max = {agent: 6.0 for agent in self.possible_agents}
-        self.v_max = {agent: 1.5 for agent in self.possible_agents}
+        self.v_max = {agent: 2.0 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -191,13 +191,14 @@ class SwarmAccEnv(DirectMARLEnv):
         self.q_desired = {agent: torch.zeros(self.num_envs, 4, device=self.device) for agent in self.cfg.possible_agents}
         self.w_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.m_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
-        self.controllers = {
-            agent: Controller(
-                1 / self.cfg.control_freq, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device), self.num_envs
-            )
-            for agent in self.cfg.possible_agents
-        }
-        self.control_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.controller = Controller(
+            1 / self.cfg.control_freq,
+            self.gravity,
+            self.robot_masses["drone_0"].to(self.device),
+            self.robot_inertias["drone_0"].to(self.device),
+            self.num_envs * self.cfg.num_drones,
+        )
+        self.control_counter = 0
         self.a_xy_desired_normalized = {agent: torch.zeros(self.num_envs, 2, device=self.device) for agent in self.cfg.possible_agents}
         self.prev_a_xy_desired_normalized = {agent: torch.zeros(self.num_envs, 2, device=self.device) for agent in self.cfg.possible_agents}
 
@@ -307,46 +308,57 @@ class SwarmAccEnv(DirectMARLEnv):
 
         ### ============= Realistic acceleration tracking ============= ###
 
-        get_control_idx = self.control_counter % self.cfg.control_decimation == 0
-        if get_control_idx.any():
+        if self.control_counter % self.cfg.control_decimation == 0:
             start = time.perf_counter()
+
+            # Parallel calculation of low-level control for all drones
+            root_state_w_all = [self.robots[agent].data.root_state_w for agent in self.possible_agents]
+            root_state_w_all = torch.cat(root_state_w_all, dim=0).contiguous()
+            state_desired_all = []
             for agent in self.possible_agents:
                 # Concatenate into full-state command
                 state_desired = torch.cat(
                     (
-                        self.p_desired[agent][get_control_idx],
-                        self.v_desired[agent][get_control_idx],
-                        # self.a_desired[agent][get_control_idx],
-                        a_after_v_clip[agent][get_control_idx],
-                        self.j_desired[agent][get_control_idx],
-                        self.yaw_desired[agent][get_control_idx],
-                        self.yaw_dot_desired[agent][get_control_idx],
+                        self.p_desired[agent],
+                        self.v_desired[agent],
+                        # self.a_desired[agent],
+                        a_after_v_clip[agent],
+                        self.j_desired[agent],
+                        self.yaw_desired[agent],
+                        self.yaw_dot_desired[agent],
                     ),
                     dim=1,
                 )
+                state_desired_all.append(state_desired)
+            state_desired_all = torch.cat(state_desired_all, dim=0).contiguous()
 
-                # Compute low-level control
-                (
-                    self.a_desired_total[agent][get_control_idx],
-                    self.thrust_desired[agent][get_control_idx],
-                    self.q_desired[agent][get_control_idx],
-                    self.w_desired[agent][get_control_idx],
-                    self.m_desired[agent][get_control_idx],
-                ) = self.controllers[agent].get_control(self.robots[agent].data.root_state_w[get_control_idx], state_desired, get_control_idx)
+            # Compute low-level control
+            a_desired_total_all, thrust_desired_all, q_desired_all, w_desired_all, m_desired_all = self.controller.get_control(root_state_w_all, state_desired_all)
 
-                # Converting 1-dim thrust cmd to force cmd in 3-dim body frame
-                self._thrust_desired[agent][get_control_idx] = torch.cat(
-                    (
-                        torch.zeros(get_control_idx.sum().item(), 2, device=self.device),
-                        self.thrust_desired[agent][get_control_idx].unsqueeze(-1),
-                    ),
-                    dim=1,
-                )
+            # Converting 1-dim thrust cmd to force cmd in 3-dim body frame
+            thrust_desired_all = thrust_desired_all.unsqueeze(1)
+            _thrust_desired_all = torch.cat((torch.zeros(self.cfg.num_drones * self.num_envs, 2, device=self.device), thrust_desired_all), dim=1)
+
+            # Split the parallel computing result among each drone
+            a_chunks = torch.split(a_desired_total_all, self.num_envs, dim=0)
+            thrust_chunks = torch.split(thrust_desired_all, self.num_envs, dim=0)
+            _thrust_chunks = torch.split(_thrust_desired_all, self.num_envs, dim=0)
+            q_chunks = torch.split(q_desired_all, self.num_envs, dim=0)
+            w_chunks = torch.split(w_desired_all, self.num_envs, dim=0)
+            m_chunks = torch.split(m_desired_all, self.num_envs, dim=0)
+            
+            for i, agent in enumerate(self.possible_agents):
+                self.a_desired_total[agent] = a_chunks[i]
+                self.thrust_desired[agent] = thrust_chunks[i]
+                self._thrust_desired[agent] = _thrust_chunks[i]
+                self.q_desired[agent] = q_chunks[i]
+                self.w_desired[agent] = w_chunks[i]
+                self.m_desired[agent] = m_chunks[i]
 
             end = time.perf_counter()
             logger.debug(f"get_control for all drones takes {end - start:.5f}s")
 
-            self.control_counter[get_control_idx] = 0
+            self.control_counter = 0
         self.control_counter += 1
 
         self._publish_debug_signals()
@@ -440,7 +452,9 @@ class SwarmAccEnv(DirectMARLEnv):
             ### ============= Smoothing ============= ###
             ang_vel_reward = -torch.linalg.norm(self.robots[agent].data.root_ang_vel_w, dim=1)
             action_norm_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1)
-            action_norm_near_goal_reward = torch.where(success_i, -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1), torch.zeros(self.num_envs, device=self.device))
+            action_norm_near_goal_reward = torch.where(
+                success_i, -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1), torch.zeros(self.num_envs, device=self.device)
+            )
             action_diff_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent] - self.prev_a_xy_desired_normalized[agent], dim=1)
             self.prev_a_xy_desired_normalized[agent] = self.a_xy_desired_normalized[agent].clone()
 
@@ -624,11 +638,9 @@ class SwarmAccEnv(DirectMARLEnv):
             self.v_desired[agent][env_ids] = torch.zeros_like(self.v_desired[agent][env_ids])
             self.prev_a_desired[agent][env_ids] = torch.zeros_like(self.prev_a_desired[agent][env_ids])
 
-            self.controllers[agent].reset(env_ids)
-
             self.prev_dist_to_goals[agent][env_ids] = torch.linalg.norm(self.goals[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
 
-        self.control_counter[env_ids] = 0
+        self.controller.reset(self.reset_env_ids_to_reset_controller_ids(env_ids))
         # Most (but only most) of the time self.reset_history_buffer is equal to self.reset_buf
         self.reset_history_buffer[env_ids] = True
         self.scroll_counter[env_ids] = 0
@@ -641,6 +653,12 @@ class SwarmAccEnv(DirectMARLEnv):
                 self.relative_positions_w[i][j][env_ids] = self.robots[agent_j].data.root_pos_w[env_ids] - self.robots[agent_i].data.root_pos_w[env_ids]
 
             self.last_observable_relative_positions[agent_i][env_ids] = torch.zeros_like(self.last_observable_relative_positions[agent_i][env_ids])
+
+    def reset_env_ids_to_reset_controller_ids(self, reset_env_ids):
+        reset_env_ids = torch.as_tensor(reset_env_ids, dtype=torch.long, device=self.device)
+        drone_offsets = torch.arange(self.cfg.num_drones, dtype=torch.long, device=self.device) * self.num_envs
+        reset_controller_ids = (drone_offsets[:, None] + reset_env_ids[None, :]).reshape(-1)
+        return reset_controller_ids
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         # Reset goal after _get_rewards before _get_observations and _get_states
