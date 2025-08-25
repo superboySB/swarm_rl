@@ -41,11 +41,11 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
     mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    # mutual_collision_avoidance_reward_weight = 40.0  # Stage 2
-    ang_vel_penalty_weight = 0.0
-    action_norm_penalty_weight = 0.0
-    action_norm_near_goal_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.0
+    # mutual_collision_avoidance_reward_weight = 25.0  # Stage 2
+    ang_vel_penalty_weight = 0.05
+    action_norm_penalty_weight = 0.05
+    action_norm_near_goal_penalty_weight = 5.0
+    action_diff_penalty_weight = 0.05
 
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
@@ -74,7 +74,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     enable_domain_randomization = True
     max_dist_noise_std = 0.5
     max_bearing_noise_std = 0.08
-    drop_prob = 0.3
+    drop_prob = 0.2
 
     # Env
     episode_length_s = 30.0
