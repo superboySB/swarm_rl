@@ -40,8 +40,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     approaching_goal_reward_weight = 2.5
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
-    # mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    mutual_collision_avoidance_reward_weight = 20.0  # Stage 2
+    mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
+    # mutual_collision_avoidance_reward_weight = 20.0  # Stage 2
     ang_vel_penalty_weight = 0.05
     action_norm_penalty_weight = 0.05
     action_norm_near_goal_penalty_weight = 5.0
@@ -60,8 +60,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     mission_names = ["migration", "crossover", "chaotic"]
     # mission_prob = [0.0, 0.2, 0.8]
     # mission_prob = [1.0, 0.0, 0.0]
-    mission_prob = [0.0, 1.0, 0.0]
-    # mission_prob = [0.0, 0.0, 1.0]
+    # mission_prob = [0.0, 1.0, 0.0]
+    mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     lowpass_filter_cutoff_freq = 10000.0
@@ -658,8 +658,8 @@ class SwarmAccEnv(DirectMARLEnv):
                 self.goals[agent][mission_1_ids, :2] = torch.stack([torch.cos(ang), torch.sin(ang)], dim=1) * r
 
             if len(mission_2_ids) > 0:
-                init_state[mission_2_ids, :2] = rand_init_p
-                self.goals[agent][mission_2_ids, :2] = rand_goal_p
+                init_state[mission_2_ids, :2] = rand_init_p[:, i]
+                self.goals[agent][mission_2_ids, :2] = rand_goal_p[:, i]
 
             init_state[env_ids, 2] = float(self.cfg.flight_altitude)
             init_state[env_ids, :3] += self.terrain.env_origins[env_ids]
@@ -807,81 +807,84 @@ class SwarmAccEnv(DirectMARLEnv):
         logger.debug(f"Resetting goals takes {end - start:.5f}s")
 
         start = time.perf_counter()
+        sin_max = math.sin(math.radians(self.cfg.max_angle_of_view))
+        max_vis = self.cfg.max_visible_distance
         curr_observations = {}
         for i, agent_i in enumerate(self.possible_agents):
             body2goal_w = self.goals[agent_i] - self.robots[agent_i].data.root_pos_w
 
-            relative_positions_with_observability = []
-            for j, _ in enumerate(self.possible_agents):
-                if i == j:
-                    continue
+            idx_others = [j for j in range(len(self.possible_agents)) if j != i]
+            rel_positions_w_orig = torch.stack([self.relative_positions_w[i][j] for j in idx_others], dim=1)  # [num_envs, num_drones - 1, 3]
 
-                relative_positions_w = self.relative_positions_w[i][j].clone()
-                distances = torch.linalg.norm(relative_positions_w, dim=1)
-                observability_mask = torch.ones_like(distances)
+            distances = torch.linalg.norm(rel_positions_w_orig, dim=-1)  # [num_envs, num_drones - 1]
+            safe_dist = distances.clamp_min(1e-6)
 
-                # Discard relative observations exceeding maximum visible distance
-                mask_far = distances > self.cfg.max_visible_distance
-                relative_positions_w[mask_far] = 0.0
-                observability_mask[mask_far] = 0.0
+            # Discard relative observations exceeding maximum visible distance
+            mask_far = distances > max_vis  # [num_envs, num_drones - 1]
 
-                # Discard relative observations exceeding maximum elevation field of view
-                sin_max = math.sin(math.radians(self.cfg.max_angle_of_view))
-                relative_positions_b = quat_apply(quat_inv(self.robots[agent_i].data.root_link_quat_w), relative_positions_w)
-                abs_rel_pos_z_b = relative_positions_b[:, 2].abs()
-                mask_invisible = (abs_rel_pos_z_b / distances) > sin_max
-                relative_positions_w[mask_invisible] = 0.0
-                observability_mask[mask_invisible] = 0.0
+            # Transform relative positions from world to body frame in a vectorized manner
+            inv_quat = quat_inv(self.robots[agent_i].data.root_link_quat_w)  # [num_envs, 4]
+            B, N = distances.shape
+            rel_flat = rel_positions_w_orig.reshape(B * N, 3)
+            inv_quat_rep = inv_quat.unsqueeze(1).expand(B, N, 4).reshape(B * N, 4)
+            rel_b_flat = quat_apply(inv_quat_rep, rel_flat)  # [num_envs * (num_drones - 1), 3]
+            rel_b = rel_b_flat.view(B, N, 3)  # [num_envs, num_drones - 1, 3]
 
-                # Domain randomization
-                if self.cfg.enable_domain_randomization:
-                    mask_observable = ~mask_far & ~mask_invisible
-                    if mask_observable.any():
-                        rel_pos = relative_positions_w[mask_observable]
-                        dist = distances[mask_observable]
+            # Discard relative observations exceeding maximum elevation field of view
+            abs_rel_pos_z_b = rel_b[..., 2].abs()
+            mask_invisible = (abs_rel_pos_z_b / safe_dist) > sin_max  # [num_envs, num_drones - 1]
 
-                        # Apply a gradually increasing noise to the distance as it grows
-                        std_dist = (dist / self.cfg.max_visible_distance) * self.cfg.max_dist_noise_std
-                        noise_dist = torch.randn_like(dist) * std_dist
-                        dist_noisy = (dist + noise_dist).clamp_min(0.0)
+            mask_blocked = mask_far | mask_invisible
 
-                        # Similarly apply noise to the bearing in spherical coordinates
-                        x, y, z = rel_pos[:, 0], rel_pos[:, 1], rel_pos[:, 2]
-                        az = torch.atan2(y, x)  # Azimuth angle
-                        el = torch.atan2(z, torch.sqrt(x**2 + y**2))  # Elevation angle
-                        std_bearing = (dist / self.cfg.max_visible_distance) * self.cfg.max_bearing_noise_std
-                        noise_az = torch.randn_like(az) * std_bearing
-                        noise_el = torch.randn_like(el) * std_bearing
-                        az_noisy = az + noise_az
-                        el_noisy = el + noise_el
+            rel_positions_w = rel_positions_w_orig.clone()
+            rel_positions_w = rel_positions_w.masked_fill(mask_blocked.unsqueeze(-1), 0.0)
+            observability_mask = torch.ones_like(distances, dtype=rel_positions_w.dtype)
+            observability_mask = observability_mask.masked_fill(mask_blocked, 0.0)
 
-                        # Spherical to Cartesian coordinates
-                        rel_pos_noisy = torch.stack(
-                            [
-                                dist_noisy * torch.cos(el_noisy) * torch.cos(az_noisy),
-                                dist_noisy * torch.cos(el_noisy) * torch.sin(az_noisy),
-                                dist_noisy * torch.sin(el_noisy),
-                            ],
-                            dim=1,
-                        )
+            # Domain randomization
+            if self.cfg.enable_domain_randomization:
+                mask_observable = ~mask_blocked
+                if mask_observable.any():
+                    rel_pos = rel_positions_w_orig[mask_observable]  # [num_observable, 3]
+                    dist = distances[mask_observable]  # [num_observable]
 
-                        # Randomly drop relative observations
-                        rand = torch.rand_like(dist)
-                        keep_mask = rand > self.cfg.drop_prob
-                        relative_positions_w[mask_observable] = torch.where(keep_mask.unsqueeze(-1), rel_pos_noisy, torch.zeros_like(rel_pos_noisy))
-                        observability_mask[mask_observable] = keep_mask.float()
+                    # Apply a gradually increasing noise to the distance as it grows
+                    std_dist = (dist / max_vis) * self.cfg.max_dist_noise_std
+                    dist_noisy = (dist + torch.randn_like(dist) * std_dist).clamp_min(0.0)
 
-                relative_positions_with_observability.append(torch.cat([relative_positions_w, observability_mask.unsqueeze(-1)], dim=1))
-            self.relative_positions_with_observability[agent_i] = torch.cat(relative_positions_with_observability, dim=1)
+                    # Similarly apply noise to the bearing in spherical coordinates
+                    x, y, z = rel_pos[:, 0], rel_pos[:, 1], rel_pos[:, 2]
+                    az = torch.atan2(y, x)  # Azimuth angle
+                    el = torch.atan2(z, torch.sqrt(x * x + y * y))  # Elevation angle
+                    std_bearing = (dist / max_vis) * self.cfg.max_bearing_noise_std
+                    az_noisy = az + torch.randn_like(az) * std_bearing
+                    el_noisy = el + torch.randn_like(el) * std_bearing
+
+                    # Spherical to Cartesian coordinates
+                    rel_pos_noisy = torch.stack(
+                        [
+                            dist_noisy * torch.cos(el_noisy) * torch.cos(az_noisy),
+                            dist_noisy * torch.cos(el_noisy) * torch.sin(az_noisy),
+                            dist_noisy * torch.sin(el_noisy),
+                        ],
+                        dim=1,
+                    )
+
+                    # Randomly drop relative observations
+                    keep_mask = torch.rand_like(dist) > self.cfg.drop_prob  # [num_observable]
+
+                    rel_positions_w[mask_observable] = torch.where(keep_mask.unsqueeze(-1), rel_pos_noisy, torch.zeros_like(rel_pos_noisy))
+                    observability_mask[mask_observable] = keep_mask.to(rel_positions_w.dtype)
+
+            rel_with_obs = torch.cat([rel_positions_w, observability_mask.unsqueeze(-1)], dim=-1)  # [num_envs, num_drones - 1, 4]
+            self.relative_positions_with_observability[agent_i] = rel_with_obs.reshape(B, N * 4)
 
             obs = torch.cat(
                 [
-                    self.a_xy_desired_normalized[agent_i].clone(),
-                    # self.robots[agent_i].data.root_pos_w[:, :2] - self.terrain.env_origins[:, :2],
-                    # self.goals[agent_i][:, :2] - self.terrain.env_origins[:, :2],
-                    body2goal_w[:, :2].clone(),
-                    self.robots[agent_i].data.root_lin_vel_w[:, :2].clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
-                    self.relative_positions_with_observability[agent_i].clone(),
+                    self.a_xy_desired_normalized[agent_i],
+                    body2goal_w[:, :2],
+                    self.robots[agent_i].data.root_lin_vel_w[:, :2],  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    self.relative_positions_with_observability[agent_i],
                 ],
                 dim=1,
             )
