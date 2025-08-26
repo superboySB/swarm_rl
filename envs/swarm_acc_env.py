@@ -59,9 +59,9 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
     # mission_prob = [0.0, 0.2, 0.8]
-    # mission_prob = [1.0, 0.0, 0.0]
+    mission_prob = [1.0, 0.0, 0.0]
     # mission_prob = [0.0, 1.0, 0.0]
-    mission_prob = [0.0, 0.0, 1.0]
+    # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     lowpass_filter_cutoff_freq = 10000.0
@@ -73,7 +73,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Domain randomization
     enable_domain_randomization = True
     max_dist_noise_std = 0.5
-    max_bearing_noise_std = 0.08
+    max_bearing_noise_std = 0.05
     drop_prob = 0.2
 
     # Env
@@ -518,30 +518,34 @@ class SwarmAccEnv(DirectMARLEnv):
         start = time.perf_counter()
         # The migration mission: huddled init states + unified random target
         if len(mission_0_ids) > 0:
-            migration_goal_range = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
-            unified_init_xy = torch.zeros(self.num_envs, 2, device=self.device).uniform_(-migration_goal_range, migration_goal_range)
-            rand_init_perturb = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
-            for idx in mission_0_ids.tolist():
-                for attempt in range(self.cfg.max_sampling_tries):
-                    self.unified_goal_xy[idx] = torch.zeros(2, device=self.device).uniform_(-migration_goal_range, migration_goal_range)
-                    dist = torch.norm(self.unified_goal_xy[idx] - unified_init_xy[idx])
-                    if dist > 1.414 * migration_goal_range:
-                        break
-                else:
-                    logger.warning(
-                        f"The search for goal position of the swarm meeting constraints within a side-length {2 * migration_goal_range} box failed, using the final sample #_#"
-                    )
+            rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
+            self.unified_goal_xy[mission_0_ids] = torch.zeros(len(mission_0_ids), 2, device=self.device).uniform_(-rg, rg)
 
-                for attempt in range(self.cfg.max_sampling_tries):
-                    rand_init_perturb[idx] = (torch.rand(self.cfg.num_drones, 2, device=self.device) * 2 - 1) * self.success_dist_thr[idx]
-                    dmat = torch.cdist(rand_init_perturb[idx], rand_init_perturb[idx])
-                    dmat.fill_diagonal_(float("inf"))
-                    if torch.min(dmat) >= 1.1 * self.cfg.safe_dist:
-                        break
-                else:
-                    logger.warning(
-                        f"The search for initial positions of the swarm meeting constraints within a side-length {2 * self.success_dist_thr[idx]} box failed, using the final sample #_#"
-                    )
+            rand_init_p_mis0 = torch.zeros(len(mission_0_ids), self.cfg.num_drones, 2, device=self.device)
+            done = torch.zeros(len(mission_0_ids), dtype=torch.bool, device=self.device)
+
+            for attempt in range(self.cfg.max_sampling_tries):
+                active = ~done
+                if not torch.any(active):
+                    break
+
+                active_ids = active.nonzero(as_tuple=False).squeeze(-1)
+                init_p = (torch.rand(active_ids.numel(), self.cfg.num_drones, 2, device=self.device) * 2 - 1) * rg  # [num_active, num_drones, 2]
+                rand_init_p_mis0[active_ids] = init_p
+                dmat = torch.cdist(init_p, init_p)  # [num_active, num_drones, num_drones]
+                eye = torch.eye(self.cfg.num_drones, dtype=torch.bool, device=self.device).expand(active_ids.numel(), -1, -1)
+                dmat.masked_fill_(eye, float("inf"))
+                dmin = dmat.amin(dim=(-2, -1))  # [num_active]
+
+                ok = dmin > 1.1 * self.cfg.safe_dist
+                if torch.any(ok):
+                    done[active_ids[ok]] = True
+
+            if torch.any(~done):
+                failed_ids = mission_0_ids[~done].tolist()
+                logger.warning(
+                    f"The search for initial positions of the swarm meeting constraints within a side-length {2 * rg} box failed for envs {failed_ids}, using the final sample #_#"
+                )
 
         # The crossover mission: init states on a circle + target on the opposite side
         if len(mission_1_ids) > 0:
@@ -571,7 +575,7 @@ class SwarmAccEnv(DirectMARLEnv):
                 dmat.masked_fill_(eye, float("inf"))
                 dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-                ok = dmin >= 1.1 * self.cfg.safe_dist
+                ok = dmin > 1.1 * self.cfg.safe_dist
                 if torch.any(ok):
                     done[active_ids[ok]] = True
 
@@ -586,7 +590,7 @@ class SwarmAccEnv(DirectMARLEnv):
         if len(mission_2_ids) > 0:
             rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - 0.25
 
-            rand_init_p = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
+            rand_init_p_mis2 = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
             done = torch.zeros(len(mission_2_ids), dtype=torch.bool, device=self.device)
 
             for attempt in range(self.cfg.max_sampling_tries):
@@ -596,13 +600,13 @@ class SwarmAccEnv(DirectMARLEnv):
 
                 active_ids = active.nonzero(as_tuple=False).squeeze(-1)
                 init_p = (torch.rand(active_ids.numel(), self.cfg.num_drones, 2, device=self.device) * 2 - 1) * rg  # [num_active, num_drones, 2]
-                rand_init_p[active_ids] = init_p
+                rand_init_p_mis2[active_ids] = init_p
                 dmat = torch.cdist(init_p, init_p)  # [num_active, num_drones, num_drones]
                 eye = torch.eye(self.cfg.num_drones, dtype=torch.bool, device=self.device).expand(active_ids.numel(), -1, -1)
                 dmat.masked_fill_(eye, float("inf"))
                 dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-                ok = dmin >= 1.1 * self.cfg.safe_dist
+                ok = dmin > 1.1 * self.cfg.safe_dist
                 if torch.any(ok):
                     done[active_ids[ok]] = True
 
@@ -628,7 +632,7 @@ class SwarmAccEnv(DirectMARLEnv):
                 dmat.masked_fill_(eye, float("inf"))
                 dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-                ok = dmin >= 1.1 * self.cfg.safe_dist
+                ok = dmin > 1.1 * self.cfg.safe_dist
                 if torch.any(ok):
                     done[active_ids[ok]] = True
 
@@ -645,7 +649,7 @@ class SwarmAccEnv(DirectMARLEnv):
             init_state = self.robots[agent].data.default_root_state.clone()
 
             if len(mission_0_ids) > 0:
-                init_state[mission_0_ids, :2] = unified_init_xy + rand_init_perturb[mission_0_ids, i]
+                init_state[mission_0_ids, :2] = rand_init_p_mis0[:, i]
                 self.goals[agent][mission_0_ids, :2] = self.unified_goal_xy[mission_0_ids].clone()
 
             if len(mission_1_ids) > 0:
@@ -658,7 +662,7 @@ class SwarmAccEnv(DirectMARLEnv):
                 self.goals[agent][mission_1_ids, :2] = torch.stack([torch.cos(ang), torch.sin(ang)], dim=1) * r
 
             if len(mission_2_ids) > 0:
-                init_state[mission_2_ids, :2] = rand_init_p[:, i]
+                init_state[mission_2_ids, :2] = rand_init_p_mis2[:, i]
                 self.goals[agent][mission_2_ids, :2] = rand_goal_p[:, i]
 
             init_state[env_ids, 2] = float(self.cfg.flight_altitude)
@@ -735,25 +739,39 @@ class SwarmAccEnv(DirectMARLEnv):
                 .nonzero(as_tuple=False)
                 .squeeze(-1)
             )
+
             if len(reset_goal_idx) > 0:
                 mission_0_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 0]  # The migration mission
                 mission_1_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 1]  # The crossover mission
                 mission_2_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 2]  # The chaotic mission
 
                 if len(mission_0_ids) > 0:
-                    migration_goal_range = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
+                    rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
 
-                    for idx in mission_0_ids.tolist():
-                        for attempt in range(self.cfg.max_sampling_tries):
-                            unified_new_goal_xy = torch.zeros_like(self.unified_goal_xy[idx]).uniform_(-migration_goal_range, migration_goal_range)
-                            dist = torch.norm(self.unified_goal_xy[idx] - unified_new_goal_xy)
-                            if dist > 1.414 * migration_goal_range:
-                                break
-                        else:
-                            logger.warning(
-                                f"The search for goal position of the swarm meeting constraints within a side-length {2 * migration_goal_range} box failed, using the final sample #_#"
-                            )
-                        self.unified_goal_xy[idx] = unified_new_goal_xy.clone()
+                    unified_goal_xy = self.unified_goal_xy[mission_0_ids]
+                    unified_new_goal_xy = torch.zeros(len(mission_0_ids), 2, device=self.device)
+                    done = torch.zeros(len(mission_0_ids), dtype=torch.bool, device=self.device)
+
+                    for attempt in range(self.cfg.max_sampling_tries):
+                        active = ~done
+                        if not torch.any(active):
+                            break
+
+                        active_ids = active.nonzero(as_tuple=False).squeeze(-1)
+                        unified_new_goal_xy[active_ids] = torch.zeros_like(unified_new_goal_xy[active_ids]).uniform_(-rg, rg)
+                        dist = torch.norm(unified_goal_xy[active_ids] - unified_new_goal_xy[active_ids])
+
+                        ok = dist > 1.414 * rg
+                        if torch.any(ok):
+                            done[active_ids[ok]] = True
+
+                    if torch.any(~done):
+                        failed_ids = mission_0_ids[~done].tolist()
+                        logger.warning(
+                            f"The search for goal position of the swarm meeting constraints within a side-length {2 * rg} box failed for envs {failed_ids}, using the final sample #_#"
+                        )
+
+                    self.unified_goal_xy[mission_0_ids] = unified_new_goal_xy
 
                     # Synchronous goal resetting in mission migration
                     for i_, agent_ in enumerate(self.possible_agents):
@@ -779,23 +797,37 @@ class SwarmAccEnv(DirectMARLEnv):
 
                 if len(mission_2_ids) > 0:
                     rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - 0.25
-                    rand_goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
+
+                    rand_goal_p = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
                     for i_, agent_ in enumerate(self.possible_agents):
-                        rand_goal_p[mission_2_ids, i_] = self.goals[agent_][mission_2_ids, :2].clone()
+                        rand_goal_p[:, i_] = self.goals[agent_][mission_2_ids, :2].clone()
+                    env_origins = self.terrain.env_origins[mission_2_ids]
+                    done = torch.zeros(len(mission_2_ids), dtype=torch.bool, device=self.device)
 
-                    for idx in mission_2_ids.tolist():
-                        for attempt in range(self.cfg.max_sampling_tries):
-                            rand_goal_p[idx, i] = (torch.rand(2, device=self.device) * 2 - 1) * rg + self.terrain.env_origins[idx, :2]
-                            dmat = torch.cdist(rand_goal_p[idx], rand_goal_p[idx])
-                            dmat.fill_diagonal_(float("inf"))
-                            if torch.min(dmat) >= 1.1 * self.cfg.safe_dist:
-                                break
-                        else:
-                            logger.warning(
-                                f"The search for goal positions of the swarm meeting constraints within a side-length {2 * rg} box failed, using the final sample #_#"
-                            )
+                    for attempt in range(self.cfg.max_sampling_tries):
+                        active = ~done
+                        if not torch.any(active):
+                            break
 
-                    self.goals[agent][mission_2_ids, :2] = rand_goal_p[mission_2_ids, i]
+                        active_ids = active.nonzero(as_tuple=False).squeeze(-1)
+                        rand_goal_p[active_ids, i] = (torch.rand(active_ids.numel(), 2, device=self.device) * 2 - 1) * rg + env_origins[active_ids]  # [num_active, 2]
+                        dmat = torch.cdist(rand_goal_p[active_ids], rand_goal_p[active_ids])  # [num_active, num_drones, num_drones]
+                        eye = torch.eye(self.cfg.num_drones, dtype=torch.bool, device=self.device).expand(active_ids.numel(), -1, -1)
+
+                        dmat.masked_fill_(eye, float("inf"))
+                        dmin = dmat.amin(dim=(-2, -1))  # [num_active]
+
+                        ok = dmin > 1.1 * self.cfg.safe_dist
+                        if torch.any(ok):
+                            done[active_ids[ok]] = True
+
+                    if torch.any(~done):
+                        failed_ids = mission_2_ids[~done].tolist()
+                        logger.warning(
+                            f"The search for goal position of a drone meeting constraints within a side-length {2 * rg} box failed for envs {failed_ids}, using the final sample #_#"
+                        )
+
+                    self.goals[agent][mission_2_ids, :2] = rand_goal_p[:, i]
 
                 self.reset_goal_timer[agent][reset_goal_idx] = 0.0
 
