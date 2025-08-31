@@ -39,7 +39,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 1.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 10.0
+    mutual_collision_penalty_weight = 0.1
+    # mutual_collision_penalty_weight = 10.0
     mutual_collision_avoidance_soft_penalty_weight = 0.1
     ang_vel_penalty_weight = 0.01
     action_norm_penalty_weight = 0.01
@@ -58,8 +59,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
     # mission_prob = [0.0, 0.2, 0.8]
-    mission_prob = [1.0, 0.0, 0.0]
-    # mission_prob = [0.0, 1.0, 0.0]
+    # mission_prob = [1.0, 0.0, 0.0]
+    mission_prob = [0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
@@ -827,7 +828,7 @@ class SwarmAccEnv(DirectMARLEnv):
                             break
 
                         active_ids = active.nonzero(as_tuple=False).squeeze(-1)
-                        rand_goal_p[active_ids, i] = (torch.rand(active_ids.numel(), 2, device=self.device) * 2 - 1) * rg + env_origins[active_ids]  # [num_active, 2]
+                        rand_goal_p[active_ids, i] = (torch.rand(active_ids.numel(), 2, device=self.device) * 2 - 1) * rg + env_origins[active_ids, :2]  # [num_active, 2]
                         dmat = torch.cdist(rand_goal_p[active_ids], rand_goal_p[active_ids])  # [num_active, num_drones, num_drones]
                         eye = torch.eye(self.cfg.num_drones, dtype=torch.bool, device=self.device).expand(active_ids.numel(), -1, -1)
 
