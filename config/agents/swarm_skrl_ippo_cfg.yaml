@@ -64,12 +64,12 @@ agent:
 
   discount_factor: 0.99
   lambda: 0.95
-  learning_rate: 1.0e-04
+  learning_rate: 1.0e-5
   learning_rate_scheduler: KLAdaptiveLR
-  # learning_rate_scheduler: null
   learning_rate_scheduler_kwargs:
-    kl_threshold: 0.016
-    max_lr: 0.0005
+    kl_threshold: 0.05
+    max_lr: 2.0e-5
+    min_lr: 5.0e-7
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler

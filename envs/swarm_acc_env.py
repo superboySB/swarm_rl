@@ -37,15 +37,14 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Reward weights
     to_live_reward_weight = 1.0  # 《活着》
     death_penalty_weight = 0.0
-    approaching_goal_reward_weight = 2.5
+    approaching_goal_reward_weight = 1.0
     success_reward_weight = 10.0
-    time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    # mutual_collision_avoidance_reward_weight = 20.0  # Stage 2
-    ang_vel_penalty_weight = 0.05
-    action_norm_penalty_weight = 0.05
-    action_norm_near_goal_penalty_weight = 5.0
-    action_diff_penalty_weight = 0.05
+    mutual_collision_penalty_weight = 10.0
+    mutual_collision_avoidance_soft_penalty_weight = 0.1
+    ang_vel_penalty_weight = 0.01
+    action_norm_penalty_weight = 0.01
+    action_norm_near_goal_penalty_weight = 1.0
+    action_diff_penalty_weight = 0.01
 
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
@@ -419,40 +418,56 @@ class SwarmAccEnv(DirectMARLEnv):
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         rewards = {}
 
-        mutual_collision_avoidance_reward = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.possible_agents}
         for i, agent in enumerate(self.possible_agents):
+            # Reward for avoiding collisions with other drones
+            collide = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            mutual_collision_avoidance_soft_reward = torch.zeros(self.num_envs, device=self.device)
             for j, _ in enumerate(self.possible_agents):
                 if i == j:
                     continue
 
                 dist_btw_drones = torch.linalg.norm(self.relative_positions_w[i][j], dim=1)
+                collide = torch.logical_or(collide, dist_btw_drones < self.cfg.collide_dist)
 
-                # collision_penalty = 1.0 / (1.0 + torch.exp(77.0 * (dist_btw_drones - self.cfg.safe_dist)))
-                collision_penalty = torch.where(
+                collision_soft_penalty = torch.where(
                     dist_btw_drones < self.cfg.safe_dist,
                     torch.exp(self.cfg.mutual_collision_avoidance_reward_scale * (self.cfg.safe_dist - dist_btw_drones)) - 1.0,
                     torch.zeros(self.num_envs, device=self.device),
                 )
-                mutual_collision_avoidance_reward[agent] -= collision_penalty
+                mutual_collision_avoidance_soft_reward -= collision_soft_penalty
 
-        for agent in self.possible_agents:
+            mutual_collision_reward = -torch.where(
+                collide,
+                torch.ones(self.num_envs, device=self.device),
+                torch.zeros(self.num_envs, device=self.device),
+            )
+
+            # Reward for encouraging drones to approach the goal
             dist_to_goal = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
             approaching_goal_reward = self.prev_dist_to_goals[agent] - dist_to_goal
             self.prev_dist_to_goals[agent] = dist_to_goal
 
-            success_i = dist_to_goal < self.success_dist_thr
             # Additional reward when the drone is close to goal
-            success_reward = torch.where(success_i, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
-            # Time penalty for not reaching the goal
-            time_reward = -torch.where(~success_i, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
+            success_i = dist_to_goal < self.success_dist_thr
+            success_reward = torch.where(
+                success_i,
+                torch.ones(self.num_envs, device=self.device),
+                torch.zeros(self.num_envs, device=self.device),
+            )
 
-            death_reward = -torch.where(self.died[agent], torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
+            death_reward = -torch.where(
+                self.died[agent],
+                torch.ones(self.num_envs, device=self.device),
+                torch.zeros(self.num_envs, device=self.device),
+            )
 
             ### ============= Smoothing ============= ###
             ang_vel_reward = -torch.linalg.norm(self.robots[agent].data.root_ang_vel_w, dim=1)
             action_norm_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1)
             action_norm_near_goal_reward = torch.where(
-                success_i, -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1), torch.zeros(self.num_envs, device=self.device)
+                success_i,
+                -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1),
+                torch.zeros(self.num_envs, device=self.device),
             )
             action_diff_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent] - self.prev_a_xy_desired_normalized[agent], dim=1)
             self.prev_a_xy_desired_normalized[agent] = self.a_xy_desired_normalized[agent].clone()
@@ -462,8 +477,10 @@ class SwarmAccEnv(DirectMARLEnv):
                 "approaching_goal": approaching_goal_reward * self.cfg.approaching_goal_reward_weight * self.step_dt,
                 "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
                 "death_penalty": death_reward * self.cfg.death_penalty_weight,
-                "time_penalty": time_reward * self.cfg.time_penalty_weight * self.step_dt,
-                "mutual_collision_avoidance": mutual_collision_avoidance_reward[agent] * self.cfg.mutual_collision_avoidance_reward_weight * self.step_dt,
+                "mutual_collision_penalty": mutual_collision_reward * self.cfg.mutual_collision_penalty_weight * self.step_dt,
+                "mutual_collision_avoidance_soft_penalty": mutual_collision_avoidance_soft_reward
+                * self.cfg.mutual_collision_avoidance_soft_penalty_weight
+                * self.step_dt,
                 ### ============= Smoothing ============= ###
                 "ang_vel_penalty": ang_vel_reward * self.cfg.ang_vel_penalty_weight * self.step_dt,
                 "action_norm_penalty": action_norm_reward * self.cfg.action_norm_penalty_weight * self.step_dt,
