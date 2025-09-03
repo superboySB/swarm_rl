@@ -27,6 +27,7 @@ from isaaclab.utils.math import quat_inv, quat_apply
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils.utils import quat_to_ang_between_z_body_and_z_world
 from utils.controller import Controller
+from utils.custom_traj import generate_custom_trajs, LissajousConfig
 
 
 @configclass
@@ -40,12 +41,13 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     approaching_goal_reward_weight = 1.0
     success_reward_weight = 10.0
     mutual_collision_penalty_weight = 0.1
-    # mutual_collision_penalty_weight = 10.0
+    # mutual_collision_penalty_weight = 100.0
     mutual_collision_avoidance_soft_penalty_weight = 0.1
-    ang_vel_penalty_weight = 0.01
-    action_norm_penalty_weight = 0.01
-    action_norm_near_goal_penalty_weight = 1.0
-    action_diff_penalty_weight = 0.01
+    # mutual_collision_avoidance_soft_penalty_weight = 25.0
+    ang_vel_penalty_weight = 0.05
+    action_norm_penalty_weight = 0.05
+    action_norm_near_goal_penalty_weight = 0.0
+    action_diff_penalty_weight = 0.05
 
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
@@ -59,11 +61,16 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
     # mission_prob = [0.0, 0.2, 0.8]
-    # mission_prob = [1.0, 0.0, 0.0]
-    mission_prob = [0.0, 1.0, 0.0]
+    mission_prob = [1.0, 0.0, 0.0]
+    # mission_prob = [0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
+
+    use_custom_traj = True  # Whether to use custom trajectory for migration mission
+    num_custom_trajs = 128
+    lissajous_cfg = LissajousConfig()
+
     lowpass_filter_cutoff_freq = 10000.0
     torque_ctrl_delay_s = 0.0
 
@@ -74,10 +81,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     enable_domain_randomization = True
     max_dist_noise_std = 0.5
     max_bearing_noise_std = 0.05
-    drop_prob = 0.2
+    drop_prob = 0.1
 
     # Env
-    episode_length_s = 30.0
+    episode_length_s = 60.0
     physics_freq = 200.0
     control_freq = 100.0
     action_freq = 20.0
@@ -104,8 +111,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
-        self.a_max = {agent: 6.0 for agent in self.possible_agents}
-        self.v_max = {agent: 2.0 for agent in self.possible_agents}
+        self.a_max = {agent: 10.0 for agent in self.possible_agents}
+        self.v_max = {agent: 4.0 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -164,6 +171,25 @@ class SwarmAccEnv(DirectMARLEnv):
         self.mission_prob = torch.tensor(self.cfg.mission_prob, device=self.device)
         # Mission migration params
         self.unified_goal_xy = torch.zeros(self.num_envs, 2, device=self.device)
+        if self.cfg.use_custom_traj:
+            # Pre-generate multiple custom trajectories for migration mission
+            sample_pos = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
+            sample_pos[:, 2] = self.cfg.flight_altitude
+            sample_vel = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
+            sample_acc = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
+            trajs = generate_custom_trajs(
+                type_id="lissajous",
+                p_odom=sample_pos,
+                v_odom=sample_vel,
+                a_odom=sample_acc,
+                p_init=sample_pos,
+                custom_cfg=self.cfg.lissajous_cfg,
+            )
+            self.custom_traj_library = trajs
+            self.custom_traj_durations = trajs.get_total_duration()
+            self.custom_traj_exec_indexs = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+            self.custom_traj_exec_timesteps = torch.zeros(self.num_envs, device=self.device)
+
         # Mission crossover params
         self.rand_r = torch.zeros(self.num_envs, device=self.device)
         self.ang = torch.zeros(self.num_envs, self.cfg.num_drones, device=self.device)
@@ -306,80 +332,80 @@ class SwarmAccEnv(DirectMARLEnv):
 
         ### ============= Realistic acceleration tracking ============= ###
 
-        get_control_idx = (self.control_counter % self.cfg.control_decimation == 0).nonzero(as_tuple=False).squeeze(-1)
-        if len(get_control_idx) > 0:
-            start = time.perf_counter()
+        # get_control_idx = (self.control_counter % self.cfg.control_decimation == 0).nonzero(as_tuple=False).squeeze(-1)
+        # if len(get_control_idx) > 0:
+        #     start = time.perf_counter()
 
-            # Parallel calculation of low-level control for all drones
-            root_state_w_all = [self.robots[agent].data.root_state_w[get_control_idx] for agent in self.possible_agents]
-            root_state_w_all = torch.cat(root_state_w_all, dim=0)
-            state_desired_all = []
-            for agent in self.possible_agents:
-                # Concatenate into full-state command
-                state_desired = torch.cat(
-                    (
-                        self.p_desired[agent][get_control_idx],
-                        self.v_desired[agent][get_control_idx],
-                        # self.a_desired[agent][get_control_idx],
-                        a_after_v_clip[agent][get_control_idx],
-                        self.j_desired[agent][get_control_idx],
-                        self.yaw_desired[agent][get_control_idx],
-                        self.yaw_dot_desired[agent][get_control_idx],
-                    ),
-                    dim=1,
-                )
-                state_desired_all.append(state_desired)
-            state_desired_all = torch.cat(state_desired_all, dim=0)
+        #     # Parallel calculation of low-level control for all drones
+        #     root_state_w_all = [self.robots[agent].data.root_state_w[get_control_idx] for agent in self.possible_agents]
+        #     root_state_w_all = torch.cat(root_state_w_all, dim=0)
+        #     state_desired_all = []
+        #     for agent in self.possible_agents:
+        #         # Concatenate into full-state command
+        #         state_desired = torch.cat(
+        #             (
+        #                 self.p_desired[agent][get_control_idx],
+        #                 self.v_desired[agent][get_control_idx],
+        #                 # self.a_desired[agent][get_control_idx],
+        #                 a_after_v_clip[agent][get_control_idx],
+        #                 self.j_desired[agent][get_control_idx],
+        #                 self.yaw_desired[agent][get_control_idx],
+        #                 self.yaw_dot_desired[agent][get_control_idx],
+        #             ),
+        #             dim=1,
+        #         )
+        #         state_desired_all.append(state_desired)
+        #     state_desired_all = torch.cat(state_desired_all, dim=0)
 
-            # Compute low-level control
-            a_desired_total_all, _thrust_desired_all, q_desired_all, w_desired_all, m_desired_all = self.controller.get_control(
-                root_state_w_all, state_desired_all, self.env_ids_to_ctrl_ids(get_control_idx)
-            )
+        #     # Compute low-level control
+        #     a_desired_total_all, _thrust_desired_all, q_desired_all, w_desired_all, m_desired_all = self.controller.get_control(
+        #         root_state_w_all, state_desired_all, self.env_ids_to_ctrl_ids(get_control_idx)
+        #     )
 
-            # Converting 1-dim thrust cmd to force cmd in 3-dim body frame
-            num_get_ctrl_envs = len(get_control_idx)
-            thrust_desired_all = torch.cat((torch.zeros(self.cfg.num_drones * num_get_ctrl_envs, 2, device=self.device), _thrust_desired_all.unsqueeze(1)), dim=1)
+        #     # Converting 1-dim thrust cmd to force cmd in 3-dim body frame
+        #     num_get_ctrl_envs = len(get_control_idx)
+        #     thrust_desired_all = torch.cat((torch.zeros(self.cfg.num_drones * num_get_ctrl_envs, 2, device=self.device), _thrust_desired_all.unsqueeze(1)), dim=1)
 
-            # Split the parallel computing result among each drone
-            a_chunks = torch.split(a_desired_total_all, num_get_ctrl_envs, dim=0)
-            thrust_chunks = torch.split(thrust_desired_all, num_get_ctrl_envs, dim=0)
-            q_chunks = torch.split(q_desired_all, num_get_ctrl_envs, dim=0)
-            w_chunks = torch.split(w_desired_all, num_get_ctrl_envs, dim=0)
-            m_chunks = torch.split(m_desired_all, num_get_ctrl_envs, dim=0)
+        #     # Split the parallel computing result among each drone
+        #     a_chunks = torch.split(a_desired_total_all, num_get_ctrl_envs, dim=0)
+        #     thrust_chunks = torch.split(thrust_desired_all, num_get_ctrl_envs, dim=0)
+        #     q_chunks = torch.split(q_desired_all, num_get_ctrl_envs, dim=0)
+        #     w_chunks = torch.split(w_desired_all, num_get_ctrl_envs, dim=0)
+        #     m_chunks = torch.split(m_desired_all, num_get_ctrl_envs, dim=0)
 
-            for i, agent in enumerate(self.possible_agents):
-                self.a_desired_total[agent][get_control_idx] = a_chunks[i]
-                self.thrust_desired[agent][get_control_idx] = thrust_chunks[i]
-                self.q_desired[agent][get_control_idx] = q_chunks[i]
-                self.w_desired[agent][get_control_idx] = w_chunks[i]
-                self.m_desired[agent][get_control_idx] = m_chunks[i]
+        #     for i, agent in enumerate(self.possible_agents):
+        #         self.a_desired_total[agent][get_control_idx] = a_chunks[i]
+        #         self.thrust_desired[agent][get_control_idx] = thrust_chunks[i]
+        #         self.q_desired[agent][get_control_idx] = q_chunks[i]
+        #         self.w_desired[agent][get_control_idx] = w_chunks[i]
+        #         self.m_desired[agent][get_control_idx] = m_chunks[i]
 
-            end = time.perf_counter()
-            logger.debug(f"get_control for all drones takes {end - start:.5f}s")
+        #     end = time.perf_counter()
+        #     logger.debug(f"get_control for all drones takes {end - start:.5f}s")
 
-            self.control_counter[get_control_idx] = 0
-        self.control_counter += 1
+        #     self.control_counter[get_control_idx] = 0
+        # self.control_counter += 1
 
-        self._publish_debug_signals()
+        # self._publish_debug_signals()
 
-        for agent in self.possible_agents:
-            # Artificial delay for ideal force and torque control
-            delayed_thrust = self.thrust_buffer[agent].popleft()
-            delayed_m = self.m_buffer[agent].popleft()
-            self.thrust_buffer[agent].append(self.thrust_desired[agent].clone())
-            self.m_buffer[agent].append(self.m_desired[agent].clone())
+        # for agent in self.possible_agents:
+        #     # Artificial delay for ideal force and torque control
+        #     delayed_thrust = self.thrust_buffer[agent].popleft()
+        #     delayed_m = self.m_buffer[agent].popleft()
+        #     self.thrust_buffer[agent].append(self.thrust_desired[agent].clone())
+        #     self.m_buffer[agent].append(self.m_desired[agent].clone())
 
-            self.robots[agent].set_external_force_and_torque(delayed_thrust.unsqueeze(1), delayed_m.unsqueeze(1), body_ids=self.body_ids[agent])
+        #     self.robots[agent].set_external_force_and_torque(delayed_thrust.unsqueeze(1), delayed_m.unsqueeze(1), body_ids=self.body_ids[agent])
 
         ### ============= Ideal acceleration tracking ============= ###
 
         # self._publish_debug_signals()
 
-        # for agent in self.possible_agents:
-        #     v_desired = self.v_desired[agent].clone()
-        #     v_desired[:, 2] += 100.0 * (self.p_desired[agent][:, 2] - self.robots[agent].data.root_pos_w[:, 2])
-        #     # Set angular velocity to zero, treat the rigid body as a particle
-        #     self.robots[agent].write_root_velocity_to_sim(torch.cat((v_desired, torch.zeros_like(v_desired)), dim=1))
+        for agent in self.possible_agents:
+            v_desired = self.v_desired[agent].clone()
+            v_desired[:, 2] += 100.0 * (self.p_desired[agent][:, 2] - self.robots[agent].data.root_pos_w[:, 2])
+            # Set angular velocity to zero, treat the rigid body as a particle
+            self.robots[agent].write_root_velocity_to_sim(torch.cat((v_desired, torch.zeros_like(v_desired)), dim=1))
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died_unified = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -537,7 +563,13 @@ class SwarmAccEnv(DirectMARLEnv):
         # The migration mission: huddled init states + unified random target
         if len(mission_0_ids) > 0:
             rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
-            self.unified_goal_xy[mission_0_ids] = torch.zeros(len(mission_0_ids), 2, device=self.device).uniform_(-rg, rg)
+            if self.cfg.use_custom_traj:
+                # randomly select a trajectory from the library
+                self.custom_traj_exec_indexs[mission_0_ids] = torch.randint(0, self.cfg.num_custom_trajs, (len(mission_0_ids),), device=self.device)
+                self.custom_traj_exec_timesteps[mission_0_ids] = torch.zeros(len(mission_0_ids), device=self.device)
+                self.unified_goal_xy[mission_0_ids] = torch.zeros(len(mission_0_ids), 2, device=self.device)
+            else:
+                self.unified_goal_xy[mission_0_ids] = torch.zeros(len(mission_0_ids), 2, device=self.device).uniform_(-rg, rg)
 
             rand_init_p_mis0 = torch.zeros(len(mission_0_ids), self.cfg.num_drones, 2, device=self.device)
             done = torch.zeros(len(mission_0_ids), dtype=torch.bool, device=self.device)
@@ -742,6 +774,31 @@ class SwarmAccEnv(DirectMARLEnv):
         # Asynchronous goal resetting in all missions except migration
         # (A mix of synchronous and asynchronous goal resetting may cause state to lose Markovianity :(
         start = time.perf_counter()
+
+        # Synchronous goal updating along the custom trajectory in the migration mission
+        if self.cfg.use_custom_traj:
+            custom_traj_envs = (self.env_mission_ids == 0).nonzero(as_tuple=False).squeeze(-1)
+            if len(custom_traj_envs) > 0:
+                # Step to the next piece in the trajectory for each env
+                self.custom_traj_exec_timesteps[custom_traj_envs] += self.step_dt
+                traj_indices = self.custom_traj_exec_indexs[custom_traj_envs]
+                traj_durations = self.custom_traj_durations[traj_indices]
+
+                # Check if the trajectory is finished
+                mask_ = self.custom_traj_exec_timesteps[custom_traj_envs] >= traj_durations
+                if mask_.any():
+                    completed_envs = custom_traj_envs[mask_]
+                    self.custom_traj_exec_indexs[completed_envs] = torch.randint(0, self.cfg.num_custom_trajs, (mask_.sum().item(),), device=self.device)
+                    self.custom_traj_exec_timesteps[completed_envs] = 0.0
+                    traj_indices = self.custom_traj_exec_indexs[custom_traj_envs]
+                    traj_durations = self.custom_traj_durations[traj_indices]
+
+                # Get target position from the trajectory
+                traj = self.custom_traj_library[traj_indices]
+                current_goals = traj.get_pos(self.custom_traj_exec_timesteps[custom_traj_envs]) + self.terrain.env_origins[custom_traj_envs]
+                for agent_name in self.possible_agents:
+                    self.goals[agent_name][custom_traj_envs] = current_goals
+
         for i, agent in enumerate(self.possible_agents):
             dist_to_goal = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
             success_i = dist_to_goal < self.success_dist_thr
@@ -763,7 +820,7 @@ class SwarmAccEnv(DirectMARLEnv):
                 mission_1_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 1]  # The crossover mission
                 mission_2_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 2]  # The chaotic mission
 
-                if len(mission_0_ids) > 0:
+                if len(mission_0_ids) > 0 and not self.cfg.use_custom_traj:
                     rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
 
                     unified_goal_xy = self.unified_goal_xy[mission_0_ids]
