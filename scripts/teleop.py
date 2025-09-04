@@ -1,4 +1,4 @@
-"""Script to run a keyboard teleoperation with quacopter environments"""
+"""Script to run a keyboard teleoperation with quadcopter environments"""
 
 import argparse
 import os

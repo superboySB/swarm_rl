@@ -93,11 +93,12 @@ class Controller:
         if env_ids is None:
             w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last, self.K_max_angular_acc, self.step_dt)
             self.w_last = w_desired
+            thrust_desired, torque_desired = self.bodyrate_control(q_odom, w_odom, force_desired, w_desired)
         else:
             w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last[env_ids], self.K_max_angular_acc, self.step_dt)
             self.w_last[env_ids] = w_desired
+            thrust_desired, torque_desired = self.bodyrate_control(q_odom, w_odom, force_desired, w_desired, env_ids)
 
-        thrust_desired, torque_desired = self.bodyrate_control(q_odom, w_odom, force_desired, w_desired)
         return total_des_acc, thrust_desired, q_desired, w_desired, torque_desired
 
     def minimum_singularity_flat_with_drag(
@@ -143,7 +144,7 @@ class Controller:
 
         failed_indices = torch.nonzero(success == False).squeeze()
         for i in failed_indices:
-            logger.warning(f"Conor case in environment[{i}]: exactly inverted flight or unactuated falling 0_0")
+            logger.warning(f"Coner case in environment[{i}]: exactly inverted flight or unactuated falling 0_0")
 
         return thrust_desired, q_desired, w_desired
 

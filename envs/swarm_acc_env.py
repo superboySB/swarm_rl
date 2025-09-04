@@ -40,11 +40,12 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     approaching_goal_reward_weight = 1.0
     success_reward_weight = 10.0
     mutual_collision_penalty_weight = 0.1
+    # mutual_collision_avoidance_soft_penalty_weight = 0.1
     # mutual_collision_penalty_weight = 10.0
-    mutual_collision_avoidance_soft_penalty_weight = 0.1
+    mutual_collision_avoidance_soft_penalty_weight = 25.0
     ang_vel_penalty_weight = 0.01
     action_norm_penalty_weight = 0.01
-    action_norm_near_goal_penalty_weight = 1.0
+    action_norm_near_goal_penalty_weight = 5.0
     action_diff_penalty_weight = 0.01
 
     # Exponential decay factors and tolerances
@@ -68,7 +69,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     torque_ctrl_delay_s = 0.0
 
     max_visible_distance = 5.0
-    max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
+    max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction 
 
     # Domain randomization
     enable_domain_randomization = True
@@ -79,8 +80,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Env
     episode_length_s = 30.0
     physics_freq = 200.0
-    control_freq = 100.0
-    action_freq = 20.0
+    control_freq = 50.0
+    action_freq = 15.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     num_drones = 5  # Number of drones per environment
@@ -89,7 +90,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     clip_action = 1.0
     possible_agents = None
     action_spaces = None
-    history_length = 10
+    history_length = 5
     history_buffer_interval = 0.1
     history_buffer_scroll_decimation = action_freq // (1 / history_buffer_interval)
     self_observation_dim = 6

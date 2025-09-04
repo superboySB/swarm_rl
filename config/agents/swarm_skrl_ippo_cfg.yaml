@@ -9,10 +9,10 @@ models:
     class: GaussianMixin
     clip_actions: False
     clip_log_std: True
-    min_log_std: -0.22  # std = 0.8
+    # min_log_std: -0.22  # std = 0.8
     # min_log_std: -0.36  # std = 0.7
     # min_log_std: -0.51  # std = 0.6
-    # min_log_std: -0.7  # std = 0.5
+    min_log_std: -0.7  # std = 0.5
     # min_log_std: -0.9  # std = 0.4
     # min_log_std: -1.2  # std = 0.3
     # min_log_std: -1.6  # std = 0.2
@@ -54,21 +54,18 @@ agent:
   rollouts: 100  # 20 steps/sec for ideal acceleration envs
   learning_epochs: 5
 
-  # Stage 1: 1000 ~ 2000 envs, 4 mini-batches
-  mini_batches: 4
-
-  # Stage 2, 3
-  # mini_batches: 65  # RTX 4090: 13000 envs, 65 mini-batches
-  # mini_batches: 35  # RTX 4070 Ti SUPER: 7000 envs, 35 mini-batches
-  # mini_batches: 15  # RTX 4080 Laptop: 3000 envs, 15 mini-batches
+  # 5 drones
+  # mini_batches: 50  # RTX 4090: 10000 envs, 50 mini-batches
+  # mini_batches: 25  # RTX 4070 Ti SUPER: 5000 envs, 25 mini-batches
+  mini_batches: 15  # RTX 4080 Laptop: 3000 envs, 15 mini-batches
 
   discount_factor: 0.99
   lambda: 0.95
-  learning_rate: 1.0e-5
+  learning_rate: 1.0e-3
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
-    kl_threshold: 0.05
-    max_lr: 2.0e-5
+    kl_threshold: 0.025
+    max_lr: 1.0e-3
     min_lr: 5.0e-7
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
@@ -80,7 +77,7 @@ agent:
   ratio_clip: 0.2
   value_clip: 0.2
   clip_predicted_values: True
-  entropy_loss_scale: 0.005
+  entropy_loss_scale: 0.0005
   value_loss_scale: 1.0
   kl_threshold: 0.0
   rewards_shaper_scale: 1.0

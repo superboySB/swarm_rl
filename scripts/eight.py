@@ -1,4 +1,4 @@
-"""Script to run a eight trajectory generation and tracking with single quacopter environment"""
+"""Script to run a eight trajectory generation and tracking with single quadcopter environment"""
 
 import argparse
 import os
