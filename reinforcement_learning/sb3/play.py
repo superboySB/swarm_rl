@@ -26,7 +26,7 @@ parser.add_argument("--num_envs", type=int, default=1, help="Number of environme
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during playing.")
 parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in frames).")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
-parser.add_argument("--real_time", action="store_true", default=True, help="Run in real-time, if possible.")
+parser.add_argument("--real_time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument(
     "--verbosity", type=str, default="INFO", choices=["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"], help="Verbosity level of the custom logger."
 )
