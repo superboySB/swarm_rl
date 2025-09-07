@@ -34,8 +34,8 @@ class QuadcopterPVAJYYdEnvCfg(DirectRLEnvCfg):
     # Env
     episode_length_s = 30.0
     physics_freq = 200.0
-    control_freq = 100.0
-    action_freq = 100.0
+    control_freq = 50.0
+    action_freq = 50.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     decimation = math.ceil(physics_freq / action_freq)  # Environment (replan) decimation
@@ -44,7 +44,7 @@ class QuadcopterPVAJYYdEnvCfg(DirectRLEnvCfg):
     state_space = 0
     action_space = 14
 
-    action_delay_s = 0.02
+    action_delay_s = 0.0
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(

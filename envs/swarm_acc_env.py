@@ -39,10 +39,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 1.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 0.1
-    # mutual_collision_avoidance_soft_penalty_weight = 0.1
-    # mutual_collision_penalty_weight = 10.0
-    mutual_collision_avoidance_soft_penalty_weight = 25.0
+    mutual_collision_penalty_weight = 25.0
+    mutual_collision_avoidance_soft_penalty_weight = 1.0
     ang_vel_penalty_weight = 0.01
     action_norm_penalty_weight = 0.01
     action_norm_near_goal_penalty_weight = 5.0
@@ -61,8 +59,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     mission_names = ["migration", "crossover", "chaotic"]
     # mission_prob = [0.0, 0.2, 0.8]
     # mission_prob = [1.0, 0.0, 0.0]
-    mission_prob = [0.0, 1.0, 0.0]
-    # mission_prob = [0.0, 0.0, 1.0]
+    # mission_prob = [0.0, 1.0, 0.0]
+    mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     lowpass_filter_cutoff_freq = 10000.0
@@ -75,7 +73,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     enable_domain_randomization = True
     max_dist_noise_std = 0.5
     max_bearing_noise_std = 0.05
-    drop_prob = 0.2
+    drop_prob = 0.1
 
     # Env
     episode_length_s = 30.0
