@@ -57,7 +57,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
 
     max_visible_distance = 5.0
-    max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction 
+    max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
 
     # Domain randomization
     enable_domain_randomization = True
@@ -85,7 +85,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 16 * num_drones
-    state_space = history_length * transient_state_dim
+    state_space = transient_state_dim
 
     def __post_init__(self):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
@@ -157,12 +157,13 @@ class SwarmVelEnv(DirectMARLEnv):
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
         self.robot_weights = {agent: (self.robot_masses[agent] * self.gravity.norm()).item() for agent in self.cfg.possible_agents}
 
+        # Normalized actions
+        self.actions = {agent: torch.zeros(self.num_envs, self.cfg.action_spaces[agent], device=self.device) for agent in self.cfg.possible_agents}
+        self.prev_actions = {agent: torch.zeros(self.num_envs, self.cfg.action_spaces[agent], device=self.device) for agent in self.cfg.possible_agents}
+
         # Denormalized actions
         self.p_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.v_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
-
-        self.v_xy_desired_normalized = {agent: torch.zeros(self.num_envs, 2, device=self.device) for agent in self.cfg.possible_agents}
-        self.prev_v_xy_desired_normalized = {agent: torch.zeros(self.num_envs, 2, device=self.device) for agent in self.cfg.possible_agents}
 
         self.prev_dist_to_goals = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.cfg.possible_agents}
 
@@ -179,7 +180,6 @@ class SwarmVelEnv(DirectMARLEnv):
         self.observation_buffer = {
             agent: torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_observasion_dim, device=self.device) for agent in self.cfg.possible_agents
         }
-        self.state_buffer = torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_state_dim, device=self.device)
         self.scroll_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # Logging
@@ -195,7 +195,7 @@ class SwarmVelEnv(DirectMARLEnv):
         for i, agent in enumerate(self.cfg.possible_agents):
             row = i // points_per_side
             col = i % points_per_side
-            init_pos = (col * self.cfg.init_gap - side_length / 2, row * self.cfg.init_gap - side_length / 2, 1.0)
+            init_pos = (col * self.cfg.init_gap - side_length / 2, row * self.cfg.init_gap - side_length / 2, self.cfg.flight_altitude)
 
             drone = Articulation(
                 self.cfg.drone_cfg.replace(
@@ -223,8 +223,8 @@ class SwarmVelEnv(DirectMARLEnv):
 
         for agent in self.possible_agents:
             # Denormalize and clip the input signal
-            self.v_xy_desired_normalized[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
-            v_xy_desired = self.v_xy_desired_normalized[agent] * self.cfg.v_max[agent]
+            self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+            v_xy_desired = self.actions[agent] * self.cfg.v_max[agent]
             speed_xy = torch.norm(v_xy_desired, dim=1, keepdim=True)
             clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
             self.v_desired[agent][:, :2] = v_xy_desired / clip_scale
@@ -324,14 +324,14 @@ class SwarmVelEnv(DirectMARLEnv):
 
             ### ============= Smoothing ============= ###
             ang_vel_reward = -torch.linalg.norm(self.robots[agent].data.root_ang_vel_w, dim=1)
-            action_norm_reward = -torch.linalg.norm(self.v_xy_desired_normalized[agent], dim=1)
+            action_norm_reward = -torch.linalg.norm(self.actions[agent], dim=1)
             action_norm_near_goal_reward = torch.where(
                 success_i,
-                -torch.linalg.norm(self.v_xy_desired_normalized[agent], dim=1),
+                -torch.linalg.norm(self.actions[agent], dim=1),
                 torch.zeros(self.num_envs, device=self.device),
             )
-            action_diff_reward = -torch.linalg.norm(self.v_xy_desired_normalized[agent] - self.prev_v_xy_desired_normalized[agent], dim=1)
-            self.prev_v_xy_desired_normalized[agent] = self.v_xy_desired_normalized[agent].clone()
+            action_diff_reward = -torch.linalg.norm(self.actions[agent] - self.prev_actions[agent], dim=1)
+            self.prev_actions[agent] = self.actions[agent].clone()
 
             reward = {
                 "meaning_to_live": torch.ones(self.num_envs, device=self.device) * self.cfg.to_live_reward_weight * self.step_dt,
@@ -415,7 +415,7 @@ class SwarmVelEnv(DirectMARLEnv):
                 dmat.masked_fill_(eye, float("inf"))
                 dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-                ok = dmin > 1.1 * self.cfg.safe_dist
+                ok = dmin > self.cfg.collide_dist
                 if torch.any(ok):
                     done[active_ids[ok]] = True
 
@@ -453,7 +453,7 @@ class SwarmVelEnv(DirectMARLEnv):
                 dmat.masked_fill_(eye, float("inf"))
                 dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-                ok = dmin > 1.1 * self.cfg.safe_dist
+                ok = dmin > self.cfg.collide_dist
                 if torch.any(ok):
                     done[active_ids[ok]] = True
 
@@ -484,7 +484,7 @@ class SwarmVelEnv(DirectMARLEnv):
                 dmat.masked_fill_(eye, float("inf"))
                 dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-                ok = dmin > 1.1 * self.cfg.safe_dist
+                ok = dmin > self.cfg.collide_dist
                 if torch.any(ok):
                     done[active_ids[ok]] = True
 
@@ -510,7 +510,7 @@ class SwarmVelEnv(DirectMARLEnv):
                 dmat.masked_fill_(eye, float("inf"))
                 dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-                ok = dmin > 1.1 * self.cfg.safe_dist
+                ok = dmin > self.cfg.collide_dist
                 if torch.any(ok):
                     done[active_ids[ok]] = True
 
@@ -556,11 +556,11 @@ class SwarmVelEnv(DirectMARLEnv):
             self.goals[agent][env_ids] += self.terrain.env_origins[env_ids]
             self.reset_goal_timer[agent][env_ids] = 0.0
 
+            self.actions[agent][env_ids] = torch.zeros_like(self.actions[agent][env_ids])
+            self.prev_actions[agent][env_ids] = torch.zeros_like(self.prev_actions[agent][env_ids])
+
             self.p_desired[agent][env_ids] = self.robots[agent].data.root_pos_w[env_ids].clone()
             self.v_desired[agent][env_ids] = torch.zeros_like(self.v_desired[agent][env_ids])
-
-            self.v_xy_desired_normalized[agent][env_ids] = torch.zeros_like(self.v_xy_desired_normalized[agent][env_ids])
-            self.prev_v_xy_desired_normalized[agent][env_ids] = torch.zeros_like(self.prev_v_xy_desired_normalized[agent][env_ids])
 
             self.prev_dist_to_goals[agent][env_ids] = torch.linalg.norm(self.goals[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
 
@@ -675,7 +675,7 @@ class SwarmVelEnv(DirectMARLEnv):
                         dmat.masked_fill_(eye, float("inf"))
                         dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-                        ok = dmin > 1.1 * self.cfg.safe_dist
+                        ok = dmin > self.cfg.collide_dist
                         if torch.any(ok):
                             done[active_ids[ok]] = True
 
@@ -771,7 +771,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
             obs = torch.cat(
                 [
-                    self.v_xy_desired_normalized[agent_i],
+                    self.actions[agent_i],
                     body2goal_w[:, :2],
                     self.robots[agent_i].data.root_lin_vel_w[:, :2],  # TODO: Try to discard velocity observations to reduce sim2real gap
                     self.relative_positions_with_observability[agent_i],
@@ -840,7 +840,7 @@ class SwarmVelEnv(DirectMARLEnv):
         for agent in self.possible_agents:
             curr_state.extend(
                 [
-                    self.a_xy_desired_normalized[agent].clone(),
+                    self.actions[agent].clone(),
                     self.robots[agent].data.root_pos_w - self.terrain.env_origins,
                     self.goals[agent] - self.robots[agent].data.root_pos_w,
                     self.robots[agent].data.root_quat_w.clone(),

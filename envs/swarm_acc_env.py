@@ -97,7 +97,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 18 * num_drones
-    state_space = history_length * transient_state_dim
+    state_space = transient_state_dim
 
     def __post_init__(self):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
@@ -173,6 +173,10 @@ class SwarmAccEnv(DirectMARLEnv):
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
         self.robot_weights = {agent: (self.robot_masses[agent] * self.gravity.norm()).item() for agent in self.cfg.possible_agents}
 
+        # Normalized actions
+        self.actions = {agent: torch.zeros(self.num_envs, self.cfg.action_spaces[agent], device=self.device) for agent in self.cfg.possible_agents}
+        self.prev_actions = {agent: torch.zeros(self.num_envs, self.cfg.action_spaces[agent], device=self.device) for agent in self.cfg.possible_agents}
+
         # Denormalized actions
         self.p_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.v_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
@@ -196,8 +200,6 @@ class SwarmAccEnv(DirectMARLEnv):
             self.num_envs * self.cfg.num_drones,
         )
         self.control_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.a_xy_desired_normalized = {agent: torch.zeros(self.num_envs, 2, device=self.device) for agent in self.cfg.possible_agents}
-        self.prev_a_xy_desired_normalized = {agent: torch.zeros(self.num_envs, 2, device=self.device) for agent in self.cfg.possible_agents}
 
         # Low-pass filter for smoothing input signal
         self.lowpass_filter_alpha = (2 * math.pi * self.cfg.lowpass_filter_cutoff_freq * self.physics_dt) / (
@@ -250,7 +252,7 @@ class SwarmAccEnv(DirectMARLEnv):
         for i, agent in enumerate(self.cfg.possible_agents):
             row = i // points_per_side
             col = i % points_per_side
-            init_pos = (col * self.cfg.init_gap - side_length / 2, row * self.cfg.init_gap - side_length / 2, 1.0)
+            init_pos = (col * self.cfg.init_gap - side_length / 2, row * self.cfg.init_gap - side_length / 2, self.cfg.flight_altitude)
 
             drone = Articulation(
                 self.cfg.drone_cfg.replace(
@@ -278,8 +280,8 @@ class SwarmAccEnv(DirectMARLEnv):
 
         for agent in self.possible_agents:
             # Denormalize and clip the input signal
-            self.a_xy_desired_normalized[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
-            a_xy_desired = self.a_xy_desired_normalized[agent] * self.cfg.a_max[agent]
+            self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+            a_xy_desired = self.actions[agent] * self.cfg.a_max[agent]
             norm_xy = torch.norm(a_xy_desired, dim=1, keepdim=True)
             clip_scale = torch.clamp(norm_xy / self.cfg.a_max[agent], min=1.0)
             self.a_desired[agent][:, :2] = a_xy_desired / clip_scale
@@ -465,14 +467,14 @@ class SwarmAccEnv(DirectMARLEnv):
 
             ### ============= Smoothing ============= ###
             ang_vel_reward = -torch.linalg.norm(self.robots[agent].data.root_ang_vel_w, dim=1)
-            action_norm_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1)
+            action_norm_reward = -torch.linalg.norm(self.actions[agent], dim=1)
             action_norm_near_goal_reward = torch.where(
                 success_i,
-                -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1),
+                -torch.linalg.norm(self.actions[agent], dim=1),
                 torch.zeros(self.num_envs, device=self.device),
             )
-            action_diff_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent] - self.prev_a_xy_desired_normalized[agent], dim=1)
-            self.prev_a_xy_desired_normalized[agent] = self.a_xy_desired_normalized[agent].clone()
+            action_diff_reward = -torch.linalg.norm(self.actions[agent] - self.prev_actions[agent], dim=1)
+            self.prev_actions[agent] = self.actions[agent].clone()
 
             reward = {
                 "meaning_to_live": torch.ones(self.num_envs, device=self.device) * self.cfg.to_live_reward_weight * self.step_dt,
@@ -697,8 +699,8 @@ class SwarmAccEnv(DirectMARLEnv):
             self.goals[agent][env_ids] += self.terrain.env_origins[env_ids]
             self.reset_goal_timer[agent][env_ids] = 0.0
 
-            self.a_xy_desired_normalized[agent][env_ids] = torch.zeros_like(self.a_xy_desired_normalized[agent][env_ids])
-            self.prev_a_xy_desired_normalized[agent][env_ids] = torch.zeros_like(self.prev_a_xy_desired_normalized[agent][env_ids])
+            self.actions[agent][env_ids] = torch.zeros_like(self.actions[agent][env_ids])
+            self.prev_actions[agent][env_ids] = torch.zeros_like(self.prev_actions[agent][env_ids])
 
             self.p_desired[agent][env_ids] = self.robots[agent].data.root_pos_w[env_ids].clone()
             self.v_desired[agent][env_ids] = torch.zeros_like(self.v_desired[agent][env_ids])
@@ -935,7 +937,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
             obs = torch.cat(
                 [
-                    self.a_xy_desired_normalized[agent_i].clone(),
+                    self.actions[agent_i].clone(),
                     body2goal_w[:, :2],
                     self.robots[agent_i].data.root_lin_vel_w[:, :2].clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
                     self.relative_positions_with_observability[agent_i].clone(),
@@ -1004,7 +1006,7 @@ class SwarmAccEnv(DirectMARLEnv):
         for agent in self.possible_agents:
             curr_state.extend(
                 [
-                    self.a_xy_desired_normalized[agent].clone(),
+                    self.actions[agent].clone(),
                     self.robots[agent].data.root_pos_w - self.terrain.env_origins,
                     self.goals[agent] - self.robots[agent].data.root_pos_w,
                     self.robots[agent].data.root_quat_w.clone(),
