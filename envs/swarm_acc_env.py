@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gymnasium as gym
 import math
+import random
 import time
 import torch
 from collections import deque
@@ -39,21 +40,20 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 1.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 25.0
+    mutual_collision_penalty_weight = 10.0
     mutual_collision_avoidance_soft_penalty_weight = 0.1
-    ang_vel_penalty_weight = 0.05
-    action_norm_penalty_weight = 0.05
-    action_norm_near_goal_penalty_weight = 5.0
-    action_diff_penalty_weight = 0.05
-
+    ang_vel_penalty_weight = 0.02
+    action_norm_penalty_weight = 0.02
+    action_norm_near_goal_penalty_weight = 1.0
+    action_diff_penalty_weight = 0.02
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
 
-    fix_range = False
-    flight_range = 3.5
+    # Mission settings
+    flight_range = 4.5
     flight_altitude = 1.0  # Desired flight altitude
-    safe_dist = 1.0
-    collide_dist = 0.6
+    safe_dist = 1.3
+    collide_dist = 0.8
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
     # mission_prob = [0.0, 0.2, 0.8]
@@ -64,25 +64,28 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     lowpass_filter_cutoff_freq = 10000.0
     torque_ctrl_delay_s = 0.0
-    realistic_ctrl = False
+    realistic_ctrl = True
+    # Params for mission crossover
+    fix_range = False
+    uniformly_distributed_prob = 0.7
 
+    # Observation parameters
     max_visible_distance = 5.0
     max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
-
     # Domain randomization
     enable_domain_randomization = True
     max_dist_noise_std = 0.5
     max_bearing_noise_std = 0.05
     drop_prob = 0.1
 
-    # Env
+    # Parameters for environment and agents
     episode_length_s = 30.0
     physics_freq = 200.0
     control_freq = 50.0
     action_freq = 15.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 5  # Number of drones per environment
+    num_drones = 6  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
@@ -98,13 +101,12 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     observation_spaces = None
     transient_state_dim = 18 * num_drones
     state_space = transient_state_dim
-
+    possible_agents = [f"drone_{i}" for i in range(num_drones)]
+    action_spaces = {agent: 2 for agent in possible_agents}
+    a_max = {agent: 10.0 for agent in possible_agents}
+    v_max = {agent: 5.0 for agent in possible_agents}
     def __post_init__(self):
-        self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
-        self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
-        self.a_max = {agent: 10.0 for agent in self.possible_agents}
-        self.v_max = {agent: 4.0 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -545,7 +547,7 @@ class SwarmAccEnv(DirectMARLEnv):
             rand_init_p_mis0 = torch.zeros(len(mission_0_ids), self.cfg.num_drones, 2, device=self.device)
             done = torch.zeros(len(mission_0_ids), dtype=torch.bool, device=self.device)
 
-            for attempt in range(self.cfg.max_sampling_tries):
+            for attempt in range(5 * self.cfg.max_sampling_tries):
                 active = ~done
                 if not torch.any(active):
                     break
@@ -578,31 +580,42 @@ class SwarmAccEnv(DirectMARLEnv):
 
             rand_r = torch.rand(len(mission_1_ids), device=self.device) * (r_max - r_min) + r_min
             ang = torch.empty((len(mission_1_ids), self.cfg.num_drones), device=self.device)
-            done = torch.zeros(len(mission_1_ids), dtype=torch.bool, device=self.device)
 
-            for attempt in range(self.cfg.max_sampling_tries):
-                active = ~done
-                if not torch.any(active):
-                    break
+            if random.random() < self.cfg.uniformly_distributed_prob:
+                N = self.cfg.num_drones
+                base = torch.arange(N, dtype=torch.float32, device=self.device) * (2 * math.pi / N)
+                rot = torch.rand(len(mission_1_ids), 1, device=self.device) * (2 * math.pi)
+                ang_ = (base.unsqueeze(0).expand(len(mission_1_ids), -1) + rot) % (2 * math.pi)
+                perms = torch.argsort(torch.rand(len(mission_1_ids), N, device=self.device), dim=1)
+                ang = torch.gather(ang_, dim=1, index=perms)
 
-                active_ids = active.nonzero(as_tuple=False).squeeze(-1)
-                ang_ = torch.rand((active_ids.numel(), self.cfg.num_drones), device=self.device) * 2 * math.pi
-                ang[active_ids] = ang_
-                r = rand_r[active_ids].unsqueeze(-1)
+            else:
+                done = torch.zeros(len(mission_1_ids), dtype=torch.bool, device=self.device)
+                for attempt in range(5 * self.cfg.max_sampling_tries):
+                    active = ~done
+                    if not torch.any(active):
+                        break
 
-                pts = torch.stack([torch.cos(ang_) * r, torch.sin(ang_) * r], dim=-1)  # [num_active, num_drones, 2]
-                dmat = torch.cdist(pts, pts)  # [num_active, num_drones, num_drones]
-                eye = torch.eye(self.cfg.num_drones, dtype=torch.bool, device=self.device).expand(active_ids.numel(), -1, -1)
-                dmat.masked_fill_(eye, float("inf"))
-                dmin = dmat.amin(dim=(-2, -1))  # [num_active]
+                    active_ids = active.nonzero(as_tuple=False).squeeze(-1)
+                    ang_ = torch.rand((active_ids.numel(), self.cfg.num_drones), device=self.device) * 2 * math.pi
+                    ang[active_ids] = ang_
+                    r = rand_r[active_ids].unsqueeze(-1)
 
-                ok = dmin > self.cfg.collide_dist
-                if torch.any(ok):
-                    done[active_ids[ok]] = True
+                    pts = torch.stack([torch.cos(ang_) * r, torch.sin(ang_) * r], dim=-1)  # [num_active, num_drones, 2]
+                    dmat = torch.cdist(pts, pts)  # [num_active, num_drones, num_drones]
+                    eye = torch.eye(self.cfg.num_drones, dtype=torch.bool, device=self.device).expand(active_ids.numel(), -1, -1)
+                    dmat.masked_fill_(eye, float("inf"))
+                    dmin = dmat.amin(dim=(-2, -1))  # [num_active]
 
-            if torch.any(~done):
-                failed_ids = mission_1_ids[~done].tolist()
-                logger.warning(f"The search for initial positions of the swarm meeting constraints on a circle failed for envs {failed_ids}, using the final sample #_#")
+                    ok = dmin > self.cfg.collide_dist
+                    if torch.any(ok):
+                        done[active_ids[ok]] = True
+
+                if torch.any(~done):
+                    failed_ids = mission_1_ids[~done].tolist()
+                    logger.warning(
+                        f"The search for initial positions of the swarm meeting constraints on a circle failed for envs {failed_ids}, using the final sample #_#"
+                    )
 
             self.rand_r[mission_1_ids] = rand_r
             self.ang[mission_1_ids] = ang
@@ -614,7 +627,7 @@ class SwarmAccEnv(DirectMARLEnv):
             rand_init_p_mis2 = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
             done = torch.zeros(len(mission_2_ids), dtype=torch.bool, device=self.device)
 
-            for attempt in range(self.cfg.max_sampling_tries):
+            for attempt in range(5 * self.cfg.max_sampling_tries):
                 active = ~done
                 if not torch.any(active):
                     break
