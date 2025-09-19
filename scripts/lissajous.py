@@ -1,4 +1,4 @@
-"""Script to run a eight trajectory generation and tracking with single quadcopter environment"""
+"""Script to run a lissajous trajectory generation and tracking with single quadcopter environment"""
 
 import argparse
 import os
@@ -7,7 +7,7 @@ from isaaclab.app import AppLauncher
 
 
 # Add argparse arguments
-parser = argparse.ArgumentParser(description="Eight trajectory generation and tracking for single quadcopter environment.")
+parser = argparse.ArgumentParser(description="Lissajous trajectory generation and tracking for single quadcopter environment.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
 parser.add_argument(
     "--task",
@@ -27,7 +27,7 @@ args_cli = parser.parse_args()
 if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
 elif args_cli.task in ["FAST-Swarm-Bodyrate", "FAST-Swarm-Waypoint"]:
-    raise ValueError("Swarm envs are not supported for eight trajectory generation and tracking #^#")
+    raise ValueError("Swarm envs are not supported for lissajous trajectory generation and tracking #^#")
 elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
 elif args_cli.task not in ["FAST-Quadcopter-PVAJYYd", "FAST-Quadcopter-Waypoint"]:
@@ -54,7 +54,7 @@ from envs import camera_waypoint_env, quadcopter_pvajyyd_env, quadcopter_waypoin
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_apply
 
-from utils.custom_traj import generate_eight_trajs
+from utils.custom_traj import generate_custom_trajs
 
 def visualize_images_live(images):
     # Images shape can be (N, height, width) or (N, height, width, channels)
@@ -124,18 +124,29 @@ def main():
                 v_odom = obs["odom"][:, 7:10]
                 a_odom = torch.zeros_like(v_odom)
 
-                traj = generate_eight_trajectory(p_odom, v_odom, a_odom, p_init)
+                traj = generate_custom_trajs(
+                    type_id="lissajous",
+                    p_odom=p_odom,
+                    v_odom=v_odom,
+                    a_odom=a_odom,
+                    p_init=p_init,
+                    is_plotting=True,
+                )
                 traj_dur = traj.get_total_duration()
                 execution_time = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device)
                 traj_update_required = torch.tensor([False] * env.unwrapped.num_envs, device=env.unwrapped.device)
 
             if traj_update_required.any():
-                a_odom = torch.where(env_reset.unsqueeze(1), torch.zeros_like(v_odom), traj.get_acc(execution_time))
-                update_traj = generate_eight_trajectory(
-                    p_odom[traj_update_required], v_odom[traj_update_required], a_odom[traj_update_required], p_init[traj_update_required]
-                )
-                traj[traj_update_required] = update_traj
-                traj_dur[traj_update_required] = update_traj.get_total_duration()
+                # a_odom = torch.where(env_reset.unsqueeze(1), torch.zeros_like(v_odom), traj.get_acc(execution_time))
+                # update_traj = generate_custom_trajs(
+                #     type_id="lissajous",
+                #     p_odom=p_odom[traj_update_required],
+                #     v_odom=v_odom[traj_update_required],
+                #     a_odom=a_odom[traj_update_required],
+                #     p_init=p_init[traj_update_required],
+                # )
+                # traj[traj_update_required] = update_traj
+                # traj_dur[traj_update_required] = update_traj.get_total_duration()
                 execution_time[traj_update_required] = 0.0
 
             if args_cli.task.endswith("Waypoint"):
@@ -175,7 +186,7 @@ def main():
             v_odom = obs["odom"][:, 7:10]
 
             env_reset = reset_terminated | reset_time_outs
-            replan_required = execution_time > 0.77 * traj_dur  # Magical Doncic
+            replan_required = execution_time > 1.0 * traj_dur  # Magical Doncic
             traj_update_required = env_reset | replan_required
 
             if args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:

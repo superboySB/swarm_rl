@@ -32,7 +32,7 @@ class QuadcopterPVAJYYdEnvCfg(DirectRLEnvCfg):
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
     # Env
-    episode_length_s = 30.0
+    episode_length_s = 300.0
     physics_freq = 200.0
     control_freq = 50.0
     action_freq = 50.0
@@ -73,7 +73,7 @@ class QuadcopterPVAJYYdEnvCfg(DirectRLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1000, env_spacing=5, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1000, env_spacing=20, replicate_physics=True)
 
     # Robot
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
