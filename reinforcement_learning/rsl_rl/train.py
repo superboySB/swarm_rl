@@ -25,7 +25,6 @@ parser.add_argument(
     help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1000, help="Number of environments to simulate.")
-parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--save_interval", type=int, default=None, help="Interval between checkpoints (in iters).")

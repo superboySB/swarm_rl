@@ -40,34 +40,34 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 1.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 10.0
+    mutual_collision_penalty_weight = 50.0
     mutual_collision_avoidance_soft_penalty_weight = 0.1
-    ang_vel_penalty_weight = 0.02
-    action_norm_penalty_weight = 0.02
+    ang_vel_penalty_weight = 0.01
+    action_norm_penalty_weight = 0.01
     action_norm_near_goal_penalty_weight = 1.0
-    action_diff_penalty_weight = 0.02
+    action_diff_penalty_weight = 0.01
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
 
     # Mission settings
-    flight_range = 4.5
+    flight_range = 3.5
     flight_altitude = 1.0  # Desired flight altitude
     safe_dist = 1.3
     collide_dist = 0.8
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    # mission_prob = [0.0, 0.2, 0.8]
+    mission_prob = [0.0, 0.2, 0.8]
     # mission_prob = [1.0, 0.0, 0.0]
-    mission_prob = [0.0, 1.0, 0.0]
+    # mission_prob = [0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     lowpass_filter_cutoff_freq = 10000.0
     torque_ctrl_delay_s = 0.0
-    realistic_ctrl = True
+    realistic_ctrl = False
     # Params for mission crossover
     fix_range = False
-    uniformly_distributed_prob = 0.7
+    uniformly_distributed_prob = 0.5
 
     # Observation parameters
     max_visible_distance = 5.0
@@ -85,7 +85,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     action_freq = 15.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 6  # Number of drones per environment
+    num_drones = 5  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
@@ -97,7 +97,6 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     self_observation_dim = 6
     relative_observation_dim = 4
     transient_observasion_dim = self_observation_dim + relative_observation_dim * (num_drones - 1)
-    # transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 18 * num_drones
     state_space = transient_state_dim

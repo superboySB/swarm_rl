@@ -86,15 +86,12 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
-    possible_agents = None
-    action_spaces = None
     history_length = 5
     history_buffer_interval = 0.1
     history_buffer_scroll_decimation = action_freq // (1 / history_buffer_interval)
     self_observation_dim = 8
     relative_observation_dim = 4
     transient_observasion_dim = self_observation_dim + relative_observation_dim * (num_drones - 1)
-    # transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 16 * num_drones
     state_space = transient_state_dim
@@ -739,8 +736,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         max_vis = self.cfg.max_visible_distance
         curr_observations = {}
         for i, agent_i in enumerate(self.possible_agents):
-            body2goal_w = self.goals[agent_i] - self.robots[agent_i].data.root_pos_w
-
             idx_others = [j for j in range(len(self.possible_agents)) if j != i]
             rel_positions_w_orig = torch.stack([self.relative_positions_w[i][j] for j in idx_others], dim=1)  # [num_envs, num_drones - 1, 3]
 
@@ -810,8 +805,9 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             obs = torch.cat(
                 [
                     self.actions[agent_i].clone(),
-                    body2goal_w[:, :2],
-                    self.robots[agent_i].data.root_lin_vel_w[:, :2].clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    self.goals[agent_i] - self.robots[agent_i].data.root_pos_w,
+                    self.robots[agent_i].data.root_quat_w.clone(),
+                    self.robots[agent_i].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
                     self.relative_positions_with_observability[agent_i].clone(),
                 ],
                 dim=1,

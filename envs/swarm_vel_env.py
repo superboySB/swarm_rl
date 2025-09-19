@@ -86,7 +86,6 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     self_observation_dim = 6
     relative_observation_dim = 4
     transient_observasion_dim = self_observation_dim + relative_observation_dim * (num_drones - 1)
-    # transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 16 * num_drones
     state_space = transient_state_dim
