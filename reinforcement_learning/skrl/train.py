@@ -31,6 +31,7 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL policy 
 parser.add_argument("--save_interval", type=int, default=None, help="Interval between checkpoints (in steps).")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in steps).")
+parser.add_argument("--run_id", type=str, default=None, help="Experiment name for the current run.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
 parser.add_argument("--init_log_std", type=float, default=None, help="Initial log standard deviation of the Gaussian model.")
 parser.add_argument("--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes.")
@@ -134,7 +135,10 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
 
     log_root_path = os.path.abspath(os.path.join("outputs", "skrl", args_cli.task, "flowline"))
-    run_info = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
+    if args_cli.run_id is not None:
+        run_info = args_cli.run_id
+    else:
+        run_info = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
     # Set directory into agent config
     agent_cfg["agent"]["experiment"]["directory"] = log_root_path
     agent_cfg["agent"]["experiment"]["experiment_name"] = run_info

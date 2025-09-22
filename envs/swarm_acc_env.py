@@ -39,25 +39,25 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Reward weights
     to_live_reward_weight = 1.0  # 《活着》
     death_penalty_weight = 0.0
-    approaching_goal_reward_weight = 1.0
+    approaching_goal_reward_weight = 10.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 50.0
+    mutual_collision_penalty_weight = 100.0
     mutual_collision_avoidance_soft_penalty_weight = 0.1
-    ang_vel_penalty_weight = 0.01
-    action_norm_penalty_weight = 0.01
-    action_norm_near_goal_penalty_weight = 1.0
-    action_diff_penalty_weight = 0.01
+    ang_vel_penalty_weight = 0.02
+    action_norm_penalty_weight = 0.02
+    action_norm_near_goal_penalty_weight = 2.0
+    action_diff_penalty_weight = 0.02
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
 
     # Mission settings
     flight_range = 3.5
     flight_altitude = 1.0  # Desired flight altitude
-    safe_dist = 1.3
-    collide_dist = 0.8
+    safe_dist = 1.0
+    collide_dist = 0.5
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    mission_prob = [0.0, 0.2, 0.8]
+    mission_prob = [0.0, 0.5, 0.5]
     # mission_prob = [1.0, 0.0, 0.0]
     # mission_prob = [0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 1.0]
@@ -107,7 +107,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     state_space = transient_state_dim
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 2 for agent in possible_agents}
-    a_max = {agent: 10.0 for agent in possible_agents}
+    a_max = {agent: 15.0 for agent in possible_agents}
     v_max = {agent: 5.0 for agent in possible_agents}
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
@@ -148,7 +148,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
-    debug_vis_collide_dist = False
+    debug_vis_collide_dist = True
     debug_vis_rel_pos = False
 
 
@@ -172,7 +172,7 @@ class SwarmAccEnv(DirectMARLEnv):
         if self.cfg.use_custom_traj:
             # Pre-generate multiple custom trajectories for migration mission
             sample_pos = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
-            sample_pos[:, 2] = self.cfg.flight_altitude
+            sample_pos[:, 2] = float(self.cfg.flight_altitude)
             sample_vel = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
             sample_acc = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
             trajs = generate_custom_trajs(
@@ -565,8 +565,9 @@ class SwarmAccEnv(DirectMARLEnv):
         # The migration mission: huddled init states + unified random target
         if len(mission_0_ids) > 0:
             rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
+
             if self.cfg.use_custom_traj:
-                # randomly select a trajectory from the library
+                # Randomly select a trajectory from the library
                 self.custom_traj_exec_indexs[mission_0_ids] = torch.randint(0, self.cfg.num_custom_trajs, (len(mission_0_ids),), device=self.device)
                 self.custom_traj_exec_timesteps[mission_0_ids] = torch.zeros(len(mission_0_ids), device=self.device)
                 self.unified_goal_xy[mission_0_ids] = torch.zeros(len(mission_0_ids), 2, device=self.device)
