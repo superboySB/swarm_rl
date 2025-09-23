@@ -39,26 +39,26 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Reward weights
     to_live_reward_weight = 1.0  # 《活着》
     death_penalty_weight = 0.0
-    approaching_goal_reward_weight = 1.0
+    approaching_goal_reward_weight = 10.0
     success_reward_weight = 10.0
     mutual_collision_penalty_weight = 50.0
-    mutual_collision_avoidance_soft_penalty_weight = 0.1
+    mutual_collision_avoidance_soft_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.01
     action_norm_penalty_weight = 0.01
-    action_norm_near_goal_penalty_weight = 1.0
+    action_norm_near_goal_penalty_weight = 0.0
     action_diff_penalty_weight = 0.01
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
 
     # Mission settings
-    flight_range = 3.5
+    flight_range = 10.0
     flight_altitude = 1.0  # Desired flight altitude
-    safe_dist = 1.3
-    collide_dist = 0.8
+    safe_dist = 1.0
+    collide_dist = 0.5
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    mission_prob = [0.0, 0.2, 0.8]
-    # mission_prob = [1.0, 0.0, 0.0]
+    # mission_prob = [0.0, 0.2, 0.8]
+    mission_prob = [1.0, 0.0, 0.0]
     # mission_prob = [0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
@@ -87,10 +87,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     episode_length_s = 30.0
     physics_freq = 200.0
     control_freq = 50.0
-    action_freq = 15.0
+    action_freq = 20.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 5  # Number of drones per environment
+    num_drones = 6  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
@@ -107,8 +107,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     state_space = transient_state_dim
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 2 for agent in possible_agents}
-    a_max = {agent: 10.0 for agent in possible_agents}
-    v_max = {agent: 5.0 for agent in possible_agents}
+    a_max = {agent: 15.0 for agent in possible_agents}
+    v_max = {agent: 10.0 for agent in possible_agents}
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
 
@@ -148,7 +148,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
-    debug_vis_collide_dist = False
+    debug_vis_collide_dist = True
     debug_vis_rel_pos = False
 
 
@@ -556,7 +556,7 @@ class SwarmAccEnv(DirectMARLEnv):
         mission_1_ids = env_ids[self.env_mission_ids[env_ids] == 1]  # The crossover mission
         mission_2_ids = env_ids[self.env_mission_ids[env_ids] == 2]  # The chaotic mission
 
-        self.success_dist_thr[mission_0_ids] = self.cfg.success_distance_threshold * self.cfg.num_drones / 1.414
+        self.success_dist_thr[mission_0_ids] = (1.0 * self.cfg.collide_dist / 2) * self.cfg.num_drones / 1.414
         self.success_dist_thr[mission_1_ids] = self.cfg.success_distance_threshold
         self.success_dist_thr[mission_2_ids] = self.cfg.success_distance_threshold
 

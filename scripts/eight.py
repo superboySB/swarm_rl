@@ -54,7 +54,7 @@ from envs import camera_waypoint_env, quadcopter_pvajyyd_env, quadcopter_waypoin
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_apply
 
-from utils.custom_traj import generate_eight_trajs
+from utils.custom_traj import generate_custom_trajs
 
 def visualize_images_live(images):
     # Images shape can be (N, height, width) or (N, height, width, channels)
@@ -124,15 +124,27 @@ def main():
                 v_odom = obs["odom"][:, 7:10]
                 a_odom = torch.zeros_like(v_odom)
 
-                traj = generate_eight_trajectory(p_odom, v_odom, a_odom, p_init)
+                traj = generate_custom_trajs(
+                    type_id="eight",
+                    p_odom=p_odom,
+                    v_odom=v_odom,
+                    a_odom=a_odom,
+                    p_init=p_init,
+                    is_plotting=True,
+                )
                 traj_dur = traj.get_total_duration()
                 execution_time = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device)
                 traj_update_required = torch.tensor([False] * env.unwrapped.num_envs, device=env.unwrapped.device)
 
             if traj_update_required.any():
                 a_odom = torch.where(env_reset.unsqueeze(1), torch.zeros_like(v_odom), traj.get_acc(execution_time))
-                update_traj = generate_eight_trajectory(
-                    p_odom[traj_update_required], v_odom[traj_update_required], a_odom[traj_update_required], p_init[traj_update_required]
+                update_traj = generate_custom_trajs(
+                    type_id="eight",
+                    p_odom=p_odom[traj_update_required],
+                    v_odom=v_odom[traj_update_required],
+                    a_odom=a_odom[traj_update_required],
+                    p_init=p_init[traj_update_required],
+                    is_plotting=True,
                 )
                 traj[traj_update_required] = update_traj
                 traj_dur[traj_update_required] = update_traj.get_total_duration()
