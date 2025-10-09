@@ -54,7 +54,7 @@ from envs import camera_waypoint_env, quadcopter_pvajyyd_env, quadcopter_waypoin
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_apply
 
-from utils.custom_traj import generate_custom_trajs
+from utils.custom_trajs import generate_custom_trajs
 
 def visualize_images_live(images):
     # Images shape can be (N, height, width) or (N, height, width, channels)

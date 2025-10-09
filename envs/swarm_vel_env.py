@@ -72,7 +72,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # Parameters for environment and agents
     episode_length_s = 30.0
     physics_freq = 200.0
-    action_freq = 15.0
+    action_freq = 100.0
     gui_render_freq = 50.0
     num_drones = 6  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
@@ -122,7 +122,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1000, env_spacing=15, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=10000, env_spacing=15, replicate_physics=True)
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()

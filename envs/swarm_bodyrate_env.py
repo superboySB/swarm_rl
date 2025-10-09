@@ -27,6 +27,7 @@ from isaaclab.utils.math import quat_inv, quat_apply
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils.utils import quat_to_ang_between_z_body_and_z_world
 from utils.controller import bodyrate_control_without_thrust
+from utils.custom_trajs import generate_custom_trajs, LissajousConfig
 
 
 @configclass
@@ -37,34 +38,38 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     # Reward weights
     to_live_reward_weight = 1.0  # 《活着》
     death_penalty_weight = 0.0
-    approaching_goal_reward_weight = 1.0
+    approaching_goal_reward_weight = 10.0
     success_reward_weight = 10.0
     mutual_collision_penalty_weight = 20.0
     mutual_collision_avoidance_soft_penalty_weight = 0.1
     ang_vel_penalty_weight = 0.05
     action_norm_penalty_weight = 0.05
-    action_norm_near_goal_penalty_weight = 5.0
+    action_norm_near_goal_penalty_weight = 10.0
     action_diff_penalty_weight = 0.05
 
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
 
     # Mission settings
-    flight_range = 4.5
+    flight_range = 3.5
     flight_altitude = 1.0  # Desired flight altitude
-    safe_dist = 1.3
-    collide_dist = 0.8
-    goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
+    safe_dist = 1.0
+    collide_dist = 0.5
+    goal_reset_delay = 0.5  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    # mission_prob = [0.0, 0.2, 0.8]
+    mission_prob = [0.0, 0.67, 0.33]
     # mission_prob = [1.0, 0.0, 0.0]
-    mission_prob = [0.0, 1.0, 0.0]
+    # mission_prob = [0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
+    # Params for mission migration
+    use_custom_traj = True  # Whether to use custom trajectory for migration mission
+    num_custom_trajs = 128
+    lissajous_cfg = LissajousConfig()
     # Params for mission crossover
     fix_range = False
-    uniformly_distributed_prob = 0.7
+    uniformly_distributed_prob = 0.5
 
     # Observation parameters
     max_visible_distance = 5.0
@@ -76,29 +81,29 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     drop_prob = 0.1
 
     # Parameters for environment and agents
-    episode_length_s = 30.0
+    episode_length_s = 300.0
     physics_freq = 200.0
     control_freq = 100.0
     action_freq = 50.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 6  # Number of drones per environment
+    num_drones = 5  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
     history_length = 5
-    history_buffer_interval = 0.1
+    history_buffer_interval = 0.02
     history_buffer_scroll_decimation = action_freq // (1 / history_buffer_interval)
-    self_observation_dim = 8
+    self_observation_dim = 17
     relative_observation_dim = 4
     transient_observasion_dim = self_observation_dim + relative_observation_dim * (num_drones - 1)
     observation_spaces = None
-    transient_state_dim = 16 * num_drones
+    transient_state_dim = 20 * num_drones
     state_space = transient_state_dim
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 4 for agent in possible_agents}
     thrust_to_weight = {agent: 2.0 for agent in possible_agents}
-    w_max = {agent: 10.0 for agent in possible_agents}
+    w_max = {agent: 6.0 for agent in possible_agents}
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
 
@@ -129,7 +134,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1000, env_spacing=15, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=10000, env_spacing=15, replicate_physics=True)
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
@@ -138,7 +143,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
-    debug_vis_collide_dist = False
+    debug_vis_collide_dist = True
     debug_vis_rel_pos = False
 
 
@@ -159,6 +164,25 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.mission_prob = torch.tensor(self.cfg.mission_prob, device=self.device)
         # Mission migration params
         self.unified_goal_xy = torch.zeros(self.num_envs, 2, device=self.device)
+        if self.cfg.use_custom_traj:
+            # Pre-generate multiple custom trajectories for migration mission
+            sample_pos = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
+            sample_pos[:, 2] = float(self.cfg.flight_altitude)
+            sample_vel = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
+            sample_acc = torch.zeros(self.cfg.num_custom_trajs, 3, device=self.device)
+            trajs = generate_custom_trajs(
+                type_id="lissajous",
+                p_odom=sample_pos,
+                v_odom=sample_vel,
+                a_odom=sample_acc,
+                p_init=sample_pos,
+                custom_cfg=self.cfg.lissajous_cfg,
+            )
+            self.custom_traj_library = trajs
+            self.custom_traj_durations = trajs.get_total_duration()
+            self.custom_traj_exec_indexs = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+            self.custom_traj_exec_timesteps = torch.zeros(self.num_envs, device=self.device)
+
         # Mission crossover params
         self.rand_r = torch.zeros(self.num_envs, device=self.device)
         self.ang = torch.zeros(self.num_envs, self.cfg.num_drones, device=self.device)
@@ -272,7 +296,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         died_unified = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
 
-            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.8, self.robots[agent].data.root_link_pos_w[:, 2] > 1.2)
+            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.5, self.robots[agent].data.root_link_pos_w[:, 2] > 1.5)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
             self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
@@ -424,7 +448,14 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         # The migration mission: huddled init states + unified random target
         if len(mission_0_ids) > 0:
             rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
-            self.unified_goal_xy[mission_0_ids] = torch.zeros(len(mission_0_ids), 2, device=self.device).uniform_(-rg, rg)
+
+            if self.cfg.use_custom_traj:
+                # Randomly select a trajectory from the library
+                self.custom_traj_exec_indexs[mission_0_ids] = torch.randint(0, self.cfg.num_custom_trajs, (len(mission_0_ids),), device=self.device)
+                self.custom_traj_exec_timesteps[mission_0_ids] = torch.zeros(len(mission_0_ids), device=self.device)
+                self.unified_goal_xy[mission_0_ids] = torch.zeros(len(mission_0_ids), 2, device=self.device)
+            else:
+                self.unified_goal_xy[mission_0_ids] = torch.zeros(len(mission_0_ids), 2, device=self.device).uniform_(-rg, rg)
 
             rand_init_p_mis0 = torch.zeros(len(mission_0_ids), self.cfg.num_drones, 2, device=self.device)
             done = torch.zeros(len(mission_0_ids), dtype=torch.bool, device=self.device)
@@ -617,6 +648,31 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         # Asynchronous goal resetting in all missions except migration
         # (A mix of synchronous and asynchronous goal resetting may cause state to lose Markovianity :(
         start = time.perf_counter()
+
+        # Synchronous goal updating along the custom trajectory in the migration mission
+        if self.cfg.use_custom_traj:
+            custom_traj_envs = (self.env_mission_ids == 0).nonzero(as_tuple=False).squeeze(-1)
+            if len(custom_traj_envs) > 0:
+                # Step to the next piece in the trajectory for each env
+                self.custom_traj_exec_timesteps[custom_traj_envs] += self.step_dt
+                traj_indices = self.custom_traj_exec_indexs[custom_traj_envs]
+                traj_durations = self.custom_traj_durations[traj_indices]
+
+                # Check if the trajectory is finished
+                mask_ = self.custom_traj_exec_timesteps[custom_traj_envs] >= traj_durations
+                if mask_.any():
+                    completed_envs = custom_traj_envs[mask_]
+                    self.custom_traj_exec_indexs[completed_envs] = torch.randint(0, self.cfg.num_custom_trajs, (mask_.sum().item(),), device=self.device)
+                    self.custom_traj_exec_timesteps[completed_envs] = 0.0
+                    traj_indices = self.custom_traj_exec_indexs[custom_traj_envs]
+                    traj_durations = self.custom_traj_durations[traj_indices]
+
+                # Get target position from the trajectory
+                traj = self.custom_traj_library[traj_indices]
+                current_goals = traj.get_pos(self.custom_traj_exec_timesteps[custom_traj_envs]) + self.terrain.env_origins[custom_traj_envs]
+                for agent_name in self.possible_agents:
+                    self.goals[agent_name][custom_traj_envs] = current_goals
+
         for i, agent in enumerate(self.possible_agents):
             dist_to_goal = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
             success_i = dist_to_goal < self.success_dist_thr
@@ -627,7 +683,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             reset_goal_idx = (
                 (
                     self.reset_goal_timer[agent]
-                    > torch.rand(self.num_envs, device=self.device) * (5 * self.cfg.goal_reset_delay - self.cfg.goal_reset_delay) + self.cfg.goal_reset_delay
+                    > torch.rand(self.num_envs, device=self.device) * (3 * self.cfg.goal_reset_delay - self.cfg.goal_reset_delay) + self.cfg.goal_reset_delay
                 )
                 .nonzero(as_tuple=False)
                 .squeeze(-1)
@@ -638,7 +694,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 mission_1_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 1]  # The crossover mission
                 mission_2_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 2]  # The chaotic mission
 
-                if len(mission_0_ids) > 0:
+                if len(mission_0_ids) > 0 and not self.cfg.use_custom_traj:
                     rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
 
                     unified_goal_xy = self.unified_goal_xy[mission_0_ids]
@@ -983,7 +1039,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
     def _publish_debug_signals(self):
 
         t = self._get_ros_timestamp()
-        agent = "drone_1"
+        agent = "drone_0"
         env_id = 0
 
         # Publish states

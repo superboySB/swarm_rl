@@ -28,7 +28,7 @@ from isaaclab.utils.math import quat_inv, quat_apply
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils.utils import quat_to_ang_between_z_body_and_z_world
 from utils.controller import Controller
-from utils.custom_traj import generate_custom_trajs, LissajousConfig
+from utils.custom_trajs import generate_custom_trajs, LissajousConfig
 
 
 @configclass
@@ -43,10 +43,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     success_reward_weight = 10.0
     mutual_collision_penalty_weight = 100.0
     mutual_collision_avoidance_soft_penalty_weight = 0.1
-    ang_vel_penalty_weight = 0.02
-    action_norm_penalty_weight = 0.02
-    action_norm_near_goal_penalty_weight = 2.0
-    action_diff_penalty_weight = 0.02
+    ang_vel_penalty_weight = 0.05
+    action_norm_penalty_weight = 0.05
+    action_norm_near_goal_penalty_weight = 10.0
+    action_diff_penalty_weight = 0.05
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
 
@@ -55,9 +55,9 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     flight_altitude = 1.0  # Desired flight altitude
     safe_dist = 1.0
     collide_dist = 0.5
-    goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
+    goal_reset_delay = 0.5  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    mission_prob = [0.0, 0.5, 0.5]
+    mission_prob = [0.0, 0.67, 0.33]
     # mission_prob = [1.0, 0.0, 0.0]
     # mission_prob = [0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 1.0]
@@ -65,7 +65,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     lowpass_filter_cutoff_freq = 10000.0
     torque_ctrl_delay_s = 0.0
-    realistic_ctrl = False
+    realistic_ctrl = True
     # Params for mission migration
     use_custom_traj = True  # Whether to use custom trajectory for migration mission
     num_custom_trajs = 128
@@ -84,20 +84,18 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     drop_prob = 0.1
 
     # Parameters for environment and agents
-    episode_length_s = 30.0
+    episode_length_s = 300.0
     physics_freq = 200.0
     control_freq = 50.0
-    action_freq = 15.0
+    action_freq = 20.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     num_drones = 5  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
-    possible_agents = None
-    action_spaces = None
     history_length = 5
-    history_buffer_interval = 0.1
+    history_buffer_interval = 0.05
     history_buffer_scroll_decimation = action_freq // (1 / history_buffer_interval)
     self_observation_dim = 6
     relative_observation_dim = 4
@@ -107,8 +105,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     state_space = transient_state_dim
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 2 for agent in possible_agents}
-    a_max = {agent: 15.0 for agent in possible_agents}
-    v_max = {agent: 5.0 for agent in possible_agents}
+    a_max = {agent: 10.0 for agent in possible_agents}
+    v_max = {agent: 2.5 for agent in possible_agents}
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
 
@@ -139,7 +137,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1000, env_spacing=15, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=10000, env_spacing=15, replicate_physics=True)
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
@@ -826,7 +824,7 @@ class SwarmAccEnv(DirectMARLEnv):
             reset_goal_idx = (
                 (
                     self.reset_goal_timer[agent]
-                    > torch.rand(self.num_envs, device=self.device) * (5 * self.cfg.goal_reset_delay - self.cfg.goal_reset_delay) + self.cfg.goal_reset_delay
+                    > torch.rand(self.num_envs, device=self.device) * (3 * self.cfg.goal_reset_delay - self.cfg.goal_reset_delay) + self.cfg.goal_reset_delay
                 )
                 .nonzero(as_tuple=False)
                 .squeeze(-1)
