@@ -47,12 +47,10 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import rclpy
-import time
 import torch
 
 from envs import camera_waypoint_env, quadcopter_pvajyyd_env, quadcopter_waypoint_env
 from isaaclab_tasks.utils import parse_env_cfg
-from isaaclab.utils.math import quat_inv, quat_apply
 
 from utils.custom_trajs import generate_custom_trajs
 
@@ -137,16 +135,6 @@ def main():
                 traj_update_required = torch.tensor([False] * env.unwrapped.num_envs, device=env.unwrapped.device)
 
             if traj_update_required.any():
-                # a_odom = torch.where(env_reset.unsqueeze(1), torch.zeros_like(v_odom), traj.get_acc(execution_time))
-                # update_traj = generate_custom_trajs(
-                #     type_id="lissajous",
-                #     p_odom=p_odom[traj_update_required],
-                #     v_odom=v_odom[traj_update_required],
-                #     a_odom=a_odom[traj_update_required],
-                #     p_init=p_init[traj_update_required],
-                # )
-                # traj[traj_update_required] = update_traj
-                # traj_dur[traj_update_required] = update_traj.get_total_duration()
                 execution_time[traj_update_required] = 0.0
 
             if args_cli.task.endswith("Waypoint"):
