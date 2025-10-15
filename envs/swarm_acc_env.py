@@ -41,12 +41,12 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 10.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 100.0
+    mutual_collision_penalty_weight = 50.0
     mutual_collision_avoidance_soft_penalty_weight = 0.1
-    ang_vel_penalty_weight = 0.05
-    action_norm_penalty_weight = 0.05
+    ang_vel_penalty_weight = 0.0
+    action_norm_penalty_weight = 0.1
     action_norm_near_goal_penalty_weight = 10.0
-    action_diff_penalty_weight = 0.05
+    action_diff_penalty_weight = 0.3
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
 
@@ -57,7 +57,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     collide_dist = 0.5
     goal_reset_delay = 0.5  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    mission_prob = [0.0, 0.67, 0.33]
+    mission_prob = [0.0, 0.5, 0.5]
     # mission_prob = [1.0, 0.0, 0.0]
     # mission_prob = [0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 1.0]
@@ -824,7 +824,7 @@ class SwarmAccEnv(DirectMARLEnv):
             reset_goal_idx = (
                 (
                     self.reset_goal_timer[agent]
-                    > torch.rand(self.num_envs, device=self.device) * (3 * self.cfg.goal_reset_delay - self.cfg.goal_reset_delay) + self.cfg.goal_reset_delay
+                    > torch.rand(self.num_envs, device=self.device) * (4 * self.cfg.goal_reset_delay - self.cfg.goal_reset_delay) + self.cfg.goal_reset_delay
                 )
                 .nonzero(as_tuple=False)
                 .squeeze(-1)

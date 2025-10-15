@@ -84,6 +84,7 @@ def main():
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env_cfg.fix_range = True
     env_cfg.goal_reset_delay /= 1.5
+    env_cfg.episode_length_s /= 10.0
 
     # Specify directory for logging experiments
     log_root_path = os.path.join("outputs", "rsl_rl", args_cli.task, "flowline")
