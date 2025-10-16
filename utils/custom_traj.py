@@ -9,8 +9,8 @@ from isaaclab.utils import configclass
 
 @configclass
 class LissajousConfig:
-    A = 5.0  # X-axis amplitude
-    B = 5.0  # Y-axis amplitude
+    A_range = [2.5, 5.0]  # X-axis amplitude
+    B_range = [2.5, 5.0]  # Y-axis amplitude
 
     ratio = [
         (1, 1),
@@ -23,7 +23,7 @@ class LissajousConfig:
         (3, 2),
         (4, 3),
     ]  # List of (a, b) frequency ratios
-    delta = [0, 2 * torch.pi]
+    delta_range = [0, 2 * torch.pi]
 
     num_pieces = 128  # Number of pieces (segments) in the trajectory
     max_exec_speed = 3.0  # Desired max execution speed (m/s)
@@ -64,14 +64,16 @@ def generate_lissajous_trajs(p_odom, v_odom, a_odom, p_init, custom_cfg: Lissajo
     ratio_tensor = torch.tensor(custom_cfg.ratio, device=device, dtype=torch.float32)
     a_params = ratio_tensor[ratio_indices][:, 0]
     b_params = ratio_tensor[ratio_indices][:, 1]
-    delta_params = torch.rand(p_odom.shape[0], device=device) * (custom_cfg.delta[1] - custom_cfg.delta[0]) + custom_cfg.delta[0]
+    delta_params = torch.rand(p_odom.shape[0], device=device) * (custom_cfg.delta_range[1] - custom_cfg.delta_range[0]) + custom_cfg.delta_range[0]
+    A_params = torch.rand(p_odom.shape[0], device=device) * (custom_cfg.A_range[1] - custom_cfg.A_range[0]) + custom_cfg.A_range[0]
+    B_params = torch.rand(p_odom.shape[0], device=device) * (custom_cfg.B_range[1] - custom_cfg.B_range[0]) + custom_cfg.B_range[0]
 
     # Estimate curve lengths and adjust duration
     inner_pts, execution_durations, traj_info = compute_lissajous_inner_pts(
         p_odom=p_odom,
         p_init=p_init,
-        A=custom_cfg.A,
-        B=custom_cfg.B,
+        A_params=A_params,
+        B_params=B_params,
         a_params=a_params,
         b_params=b_params,
         delta_params=delta_params,
@@ -116,10 +118,10 @@ def generate_eight_trajs(p_odom, v_odom, a_odom, p_init, custom_cfg=None, is_plo
     return MJO.get_traj()
 
 
-def compute_lissajous_inner_pts(p_odom, p_init, A=3.0, B=3.0, a_params=None, b_params=None, delta_params=None, num_pieces=64, max_exec_speed=2.0):
+def compute_lissajous_inner_pts(p_odom, p_init, A_params=None, B_params=None, a_params=None, b_params=None, delta_params=None, num_pieces=64, max_exec_speed=2.0):
     device = p_odom.device
     K = num_pieces - 1
-    total_lengths, origin_max_speeds, origin_max_accels = compute_curve_properties(A, B, a_params, b_params, delta_params)
+    total_lengths, origin_max_speeds, origin_max_accels = compute_curve_properties(A_params, B_params, a_params, b_params, delta_params)
 
     # Uniformly sample t
     execution_times = 2 * torch.pi * origin_max_speeds / max_exec_speed  # [num_trajs]
@@ -129,11 +131,13 @@ def compute_lissajous_inner_pts(p_odom, p_init, A=3.0, B=3.0, a_params=None, b_p
     execution_durations = execution_times.unsqueeze(1).expand(-1, num_pieces) / num_pieces
 
     # Compute inner points
+    A_expanded = A_params.unsqueeze(1)
+    B_expanded = B_params.unsqueeze(1)
     a_expanded = a_params.unsqueeze(1)
     b_expanded = b_params.unsqueeze(1)
     delta_expanded = delta_params.unsqueeze(1)
-    x = A * torch.sin(a_expanded * t_expanded + delta_expanded)
-    y = B * torch.sin(b_expanded * t_expanded)
+    x = A_expanded * torch.sin(a_expanded * t_expanded + delta_expanded)
+    y = B_expanded * torch.sin(b_expanded * t_expanded)
 
     center_x = torch.mean(x, dim=1, keepdim=True)
     center_y = torch.mean(y, dim=1, keepdim=True)
@@ -170,6 +174,8 @@ def compute_lissajous_inner_pts(p_odom, p_init, A=3.0, B=3.0, a_params=None, b_p
                 "a": a_params[i].item(),
                 "b": b_params[i].item(),
                 "delta": delta_params[i].item(),
+                "A": A_params[i].item(),
+                "B": B_params[i].item(),
                 "distance_to_first": distance_to_first[i].item(),
                 "distance_from_last": distance_from_last[i].item(),
                 "time_to_first": time_to_first[i].item(),
@@ -180,21 +186,23 @@ def compute_lissajous_inner_pts(p_odom, p_init, A=3.0, B=3.0, a_params=None, b_p
     return inner_pts, execution_durations, traj_info
 
 
-def compute_curve_properties(A, B, a_params, b_params, delta_params, num_integration_points=10000):
+def compute_curve_properties(A_params, B_params, a_params, b_params, delta_params, num_integration_points=10000):
     device = a_params.device
 
     t_high_res = torch.linspace(0, 2 * torch.pi, num_integration_points, device=device)  # [num_integration_points]
     t_high_res_expanded = t_high_res.unsqueeze(0).expand(a_params.shape[0], -1)
+    A_expanded = A_params.unsqueeze(1)
+    B_expanded = B_params.unsqueeze(1)
     a_expanded = a_params.unsqueeze(1)
     b_expanded = b_params.unsqueeze(1)
     delta_expanded = delta_params.unsqueeze(1)
     # velocity
-    dx_dt = A * a_expanded * torch.cos(a_expanded * t_high_res_expanded + delta_expanded)
-    dy_dt = B * b_expanded * torch.cos(b_expanded * t_high_res_expanded)
+    dx_dt = A_expanded * a_expanded * torch.cos(a_expanded * t_high_res_expanded + delta_expanded)
+    dy_dt = B_expanded * b_expanded * torch.cos(b_expanded * t_high_res_expanded)
     speed = torch.sqrt(dx_dt**2 + dy_dt**2)
     # acceleration
-    ddx_ddt = -A * a_expanded**2 * torch.sin(a_expanded * t_high_res_expanded + delta_expanded)
-    ddy_ddt = -B * b_expanded**2 * torch.sin(b_expanded * t_high_res_expanded)
+    ddx_ddt = -A_expanded * a_expanded**2 * torch.sin(a_expanded * t_high_res_expanded + delta_expanded)
+    ddy_ddt = -B_expanded * b_expanded**2 * torch.sin(b_expanded * t_high_res_expanded)
     accel = torch.sqrt(ddx_ddt**2 + ddy_ddt**2)
 
     dt = 2 * torch.pi / (num_integration_points - 1)
