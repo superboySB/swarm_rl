@@ -11,14 +11,17 @@ models:
     clip_log_std: True
     # min_log_std: -0.0  # std = 1.0
     # min_log_std: -0.7  # std = 0.5
-    min_log_std: -1.2  # std = 0.3
-    # min_log_std: -2.3  # std = 0.1
-    max_log_std: 0.18  # std = 1.2
+    # min_log_std: -1.2  # std = 0.3
+    min_log_std: -2.3  # std = 0.1
+    # min_log_std: -4.6  # std = 0.01
+    max_log_std: 0.26  # std = 1.3
+    # initial_log_std: -0.7  # std = 0.5
+    # initial_log_std: -1.2  # std = 0.3
     initial_log_std: 0.0
     network:
       - name: net
         input: STATES
-        layers: [256, 256, 128, 64]
+        layers: [128, 128, 64, 32]
         activations: elu
     output: ACTIONS
   value:  # see deterministic_model parameters
@@ -27,7 +30,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [256, 256, 128, 64]
+        layers: [128, 128, 64, 32]
         activations: elu
     output: ONE
 
@@ -43,7 +46,6 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/multi_agents/mappo.html
 agent:
   class: MAPPO
-  shared_parameters: True
   param_sharing: True
   # rollouts: 200  # 50 steps/sec for bodyrate envs
   rollouts: 100  # 20 steps/sec for velocity and acceleration envs
@@ -58,7 +60,7 @@ agent:
   learning_rate: 0.001
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
-    kl_threshold: 0.006
+    kl_threshold: 0.01
     max_lr: 0.001
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
@@ -71,12 +73,12 @@ agent:
   grad_norm_clip: 1.0
   ratio_clip: 0.2
   value_clip: 0.2
-  clip_predicted_values: True
-  entropy_loss_scale: 0.0001
-  value_loss_scale: 1.0
+  clip_predicted_values: False
+  entropy_loss_scale: 0.001
+  value_loss_scale: 2.0
   kl_threshold: 0.0
   rewards_shaper_scale: 1.0
-  time_limit_bootstrap: True
+  time_limit_bootstrap: False
   # logging and checkpoint
   experiment:
     directory: ""

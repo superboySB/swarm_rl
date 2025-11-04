@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gymnasium as gym
 import math
-import random
 import time
 import torch
 from collections.abc import Sequence
@@ -81,18 +80,18 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
 
     # Parameters for environment and agents
     episode_length_s = 300.0
-    physics_freq = 200.0
-    control_freq = 100.0
-    action_freq = 50.0
-    gui_render_freq = 50.0
-    control_decimation = physics_freq // control_freq
+    physics_freq = 200
+    control_freq = 100
+    action_freq = 50
+    gui_render_freq = 50
+    control_decimation = max(1, physics_freq // control_freq)
     num_drones = 5  # Number of drones per environment
-    decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
-    render_decimation = physics_freq // gui_render_freq
+    decimation = max(1, math.ceil(physics_freq / action_freq))  # Environment decimation
+    render_decimation = max(1, physics_freq // gui_render_freq)
     clip_action = 1.0
     history_length = 5
     history_buffer_interval = 0.02
-    history_buffer_scroll_decimation = action_freq // (1 / history_buffer_interval)
+    history_buffer_scroll_decimation = max(1, int(round(history_buffer_interval * action_freq)))
     self_observation_dim = 17
     relative_observation_dim = 4
     transient_observasion_dim = self_observation_dim + relative_observation_dim * (num_drones - 1)
@@ -103,6 +102,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     action_spaces = {agent: 4 for agent in possible_agents}
     thrust_to_weight = {agent: 2.0 for agent in possible_agents}
     w_max = {agent: 6.0 for agent in possible_agents}
+
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
 
@@ -152,8 +152,9 @@ class SwarmBodyrateEnv(DirectMARLEnv):
     def __init__(self, cfg: SwarmBodyrateEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
-            raise ValueError("Action and control decimation must be greater than or equal to 1 #^#")
+        logger.info(
+            f"Decimations of the env are: action decimation = {self.cfg.decimation}, controllor decimation = {self.cfg.control_decimation}, history buffer scroll decimation = {self.cfg.history_buffer_scroll_decimation}"
+        )
 
         self.goals = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.env_mission_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -295,17 +296,17 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         died_unified = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
 
-            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.5, self.robots[agent].data.root_link_pos_w[:, 2] > 1.5)
-            ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
+            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_pos_w[:, 2] < 0.5, self.robots[agent].data.root_pos_w[:, 2] > 1.5)
+            ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_quat_w))
             self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
             x_exceed_bounds = torch.logical_or(
-                self.robots[agent].data.root_link_pos_w[:, 0] - self.terrain.env_origins[:, 0] < -self.cfg.flight_range,
-                self.robots[agent].data.root_link_pos_w[:, 0] - self.terrain.env_origins[:, 0] > self.cfg.flight_range,
+                self.robots[agent].data.root_pos_w[:, 0] - self.terrain.env_origins[:, 0] < -self.cfg.flight_range,
+                self.robots[agent].data.root_pos_w[:, 0] - self.terrain.env_origins[:, 0] > self.cfg.flight_range,
             )
             y_exceed_bounds = torch.logical_or(
-                self.robots[agent].data.root_link_pos_w[:, 1] - self.terrain.env_origins[:, 1] < -self.cfg.flight_range,
-                self.robots[agent].data.root_link_pos_w[:, 1] - self.terrain.env_origins[:, 1] > self.cfg.flight_range,
+                self.robots[agent].data.root_pos_w[:, 1] - self.terrain.env_origins[:, 1] < -self.cfg.flight_range,
+                self.robots[agent].data.root_pos_w[:, 1] - self.terrain.env_origins[:, 1] > self.cfg.flight_range,
             )
             self.died[agent] = torch.logical_or(self.died[agent], torch.logical_or(x_exceed_bounds, y_exceed_bounds))
 
@@ -493,7 +494,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             rand_r = torch.rand(len(mission_1_ids), device=self.device) * (r_max - r_min) + r_min
             ang = torch.empty((len(mission_1_ids), self.cfg.num_drones), device=self.device)
 
-            if random.random() < self.cfg.uniformly_distributed_prob:
+            if torch.rand((), device=self.device) < self.cfg.uniformly_distributed_prob:
                 N = self.cfg.num_drones
                 base = torch.arange(N, dtype=torch.float32, device=self.device) * (2 * math.pi / N)
                 rot = torch.rand(len(mission_1_ids), 1, device=self.device) * (2 * math.pi)
@@ -735,7 +736,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         )
 
                 if len(mission_1_ids) > 0:
-                    self.ang[mission_1_ids, i] += math.pi
+                    self.ang[mission_1_ids, i] = (self.ang[mission_1_ids, i] + math.pi) % (2 * math.pi)
                     self.goals[agent][mission_1_ids, :2] = torch.stack(
                         [torch.cos(self.ang[mission_1_ids, i]), torch.sin(self.ang[mission_1_ids, i])], dim=1
                     ) * self.rand_r[mission_1_ids].unsqueeze(-1)
@@ -801,7 +802,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             mask_far = distances > max_vis  # [num_envs, num_drones - 1]
 
             # Transform relative positions from world to body frame in a vectorized manner
-            inv_quat = quat_inv(self.robots[agent_i].data.root_link_quat_w)  # [num_envs, 4]
+            inv_quat = quat_inv(self.robots[agent_i].data.root_quat_w)  # [num_envs, 4]
             B, N = distances.shape
             rel_flat = rel_positions_w_orig.reshape(B * N, 3)
             inv_quat_rep = inv_quat.unsqueeze(1).expand(B, N, 4).reshape(B * N, 4)
@@ -853,6 +854,13 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
                     rel_positions_w[mask_observable] = torch.where(keep_mask.unsqueeze(-1), rel_pos_noisy, torch.zeros_like(rel_pos_noisy))
                     observability_mask[mask_observable] = keep_mask.to(rel_positions_w.dtype)
+
+            # Sort neighbors by perceived (noisy) distance and invisible ones go last
+            perceived_dist = torch.linalg.norm(rel_positions_w, dim=-1)
+            sort_key = torch.where(observability_mask > 0.5, perceived_dist, torch.full_like(perceived_dist, float("inf")))
+            sorted_idx = torch.argsort(sort_key, dim=1)
+            rel_positions_w  = rel_positions_w.gather(1, sorted_idx.unsqueeze(-1).expand(-1, -1, 3))
+            observability_mask = observability_mask.gather(1, sorted_idx)
 
             rel_with_obs = torch.cat([rel_positions_w, observability_mask.unsqueeze(-1)], dim=-1)  # [num_envs, num_drones - 1, 4]
             self.relative_positions_with_observability[agent_i] = rel_with_obs.reshape(B, N * 4)

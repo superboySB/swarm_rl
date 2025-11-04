@@ -142,7 +142,7 @@ def rvo(state: torch.Tensor, env_cfg, params: Dict = None) -> Dict[str, torch.Te
 
     # Perturb a little to avoid deadlocks due to perfect symmetry
     angle = 2.0 * math.pi * torch.rand(pref_vel.shape[0], pref_vel.shape[1], 1, device=pref_vel.device, dtype=pref_vel.dtype)
-    dist = 0.8 * Vmax * torch.rand(pref_vel.shape[0], pref_vel.shape[1], 1, device=pref_vel.device, dtype=pref_vel.dtype)
+    dist = 1.0 * Vmax * torch.rand(pref_vel.shape[0], pref_vel.shape[1], 1, device=pref_vel.device, dtype=pref_vel.dtype)
     noise = dist * torch.cat([torch.cos(angle), torch.sin(angle)], dim=-1)  # (N,A,2)
     pref_vel += noise
 
