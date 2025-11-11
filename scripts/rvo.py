@@ -357,7 +357,6 @@ def main():
     # Create environment configuration
     env_cfg = parse_env_cfg("FAST-Swarm-Vel", device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric)
     env_cfg.fix_range = True
-    env_cfg.goal_reset_delay /= 1.5
     env_cfg.episode_length_s /= 10.0
     # Create environment
     env = gym.make("FAST-Swarm-Vel", cfg=env_cfg)
