@@ -61,7 +61,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
-    torque_ctrl_delay_ms = 50.0  # Angular velocity controller delay of PX4-Autopilot: 20 ~ 50ms
+    torque_ctrl_delay_ms = 0.0  # Angular velocity controller delay of PX4-Autopilot: 20 ~ 50ms
     realistic_ctrl = True
     # Params for mission migration
     use_custom_traj = True  # Whether to use custom trajectory for migration mission
@@ -96,7 +96,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     decimation = max(1, math.ceil(physics_freq / action_freq))  # Environment decimation
     render_decimation = max(1, physics_freq // gui_render_freq)
     clip_action = 1.0
-    history_length = 5
+    history_length = 3
     history_buffer_interval = 0.05
     history_buffer_scroll_decimation = max(1, int(round(history_buffer_interval * action_freq)))
     self_observation_dim = 6
@@ -780,7 +780,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
                 if self.torque_delay_max_lag > 0:
                     rand_lags = torch.randint(
-                        low=math.ceil(0.4 * self.torque_delay_max_lag),  # 20 ~ 50ms
+                        low=math.floor(0.4 * self.torque_delay_max_lag),  # 20 ~ 50ms
                         high=self.torque_delay_max_lag + 1,
                         size=(len(env_ids),),
                         dtype=torch.int,
@@ -796,7 +796,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
             if self.lin_vel_obs_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=math.ceil(0.77 * self.lin_vel_obs_max_lag),  # Dončić ~~
+                    low=math.floor(0.77 * self.lin_vel_obs_max_lag),  # Dončić ~~
                     high=self.lin_vel_obs_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
@@ -808,7 +808,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
             if self.rel_pos_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=math.ceil(0.77 * self.rel_pos_max_lag),
+                    low=math.floor(0.77 * self.rel_pos_max_lag),
                     high=self.rel_pos_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,

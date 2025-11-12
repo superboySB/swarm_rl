@@ -70,8 +70,8 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     uniformly_distributed_prob = 0.5
 
     # Observation parameters
-    odom_vel_delay_ms = 160.0  # Seeker Omni-4P streaming delay: 160ms, VIO delay: 0ms with imu propogation
-    rel_pos_delay_ms = 200.0  # Seeker Omni-4P streaming delay: 160ms, YOLO delay: 40ms
+    lin_vel_obs_delay_ms = 20.0  # VIO delay: 5ms with imu propogation
+    rel_pos_obs_delay_ms = 200.0  # Seeker Omni-4P streaming delay: 160ms + YOLO delay: 40ms
     max_visible_distance = 5.0
     max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
     # Domain randomization
@@ -94,7 +94,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     decimation = max(1, math.ceil(physics_freq / action_freq))  # Environment decimation
     render_decimation = max(1, physics_freq // gui_render_freq)
     clip_action = 1.0
-    history_length = 5
+    history_length = 3
     history_buffer_interval = 0.02
     history_buffer_scroll_decimation = max(1, int(round(history_buffer_interval * action_freq)))
     self_observation_dim = 17
@@ -156,13 +156,9 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
     def __init__(self, cfg: SwarmBodyrateEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-
-        logger.info(
-            "Decimations of the env are: "
-            + f"action decimation = {self.cfg.decimation}, "
-            + f"controllor decimation = {self.cfg.control_decimation}, "
-            + f"history buffer scroll decimation = {self.cfg.history_buffer_scroll_decimation}"
-        )
+        logger.info(f"Action decimation = {self.cfg.decimation}")
+        logger.info(f"Controller decimation = {self.cfg.control_decimation}")
+        logger.info(f"History buffer scroll decimation = {self.cfg.history_buffer_scroll_decimation}")
 
         self.goals = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.prev_dist_to_goals = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.cfg.possible_agents}
@@ -225,19 +221,21 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.rel_pos_w_noisy_with_observability = {}  # For visualization only
 
         # Delay for observation
-        self.odom_vel_mean_lag = 0 if self.cfg.odom_vel_delay_ms <= 0.0 else int(math.ceil(self.cfg.odom_vel_delay_ms * 1e-3 / self.step_dt))
-        self.odom_vel_delay = {
+        self.lin_vel_obs_max_lag = 0 if self.cfg.lin_vel_obs_delay_ms <= 0.0 else int(math.ceil(self.cfg.lin_vel_obs_delay_ms * 1e-3 / self.step_dt))
+        logger.info(f"Max lin vel observation delay = {self.lin_vel_obs_max_lag} env steps")
+        self.lin_vel_delay = {
             agent: DelayBuffer(
-                history_length=0 if self.odom_vel_mean_lag == 0 else int(math.ceil(1.3 * self.odom_vel_mean_lag)),
+                history_length=self.lin_vel_obs_max_lag,
                 batch_size=self.num_envs,
                 device=self.device,
             )
             for agent in self.cfg.possible_agents
         }
-        self.rel_pos_mean_lag = 0 if self.cfg.rel_pos_delay_ms <= 0.0 else int(math.ceil(self.cfg.rel_pos_delay_ms * 1e-3 / self.step_dt))
+        self.rel_pos_max_lag = 0 if self.cfg.rel_pos_obs_delay_ms <= 0.0 else int(math.ceil(self.cfg.rel_pos_obs_delay_ms * 1e-3 / self.step_dt))
+        logger.info(f"Max rel pos observation delay = {self.rel_pos_max_lag} env steps")
         self.rel_pos_delay = {
             agent: DelayBuffer(
-                history_length=0 if self.rel_pos_mean_lag == 0 else int(math.ceil(1.3 * self.rel_pos_mean_lag)),
+                history_length=self.rel_pos_max_lag,
                 batch_size=self.num_envs,
                 device=self.device,
             )
@@ -352,7 +350,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        return {agent: died_unified for agent in self.cfg.possible_agents}, {agent: time_out for agent in self.cfg.possible_agents}
+        return {agent: died_unified for agent in self.possible_agents}, {agent: time_out for agent in self.possible_agents}
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         rewards = {}
@@ -655,25 +653,25 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             self.actions[agent][env_ids] = torch.zeros_like(self.actions[agent][env_ids])
             self.prev_actions[agent][env_ids] = torch.zeros_like(self.prev_actions[agent][env_ids])
 
-            self.odom_vel_delay[agent].reset(env_ids)
+            self.lin_vel_delay[agent].reset(env_ids)
             self.rel_pos_delay[agent].reset(env_ids)
 
-            if self.odom_vel_mean_lag > 0:
+            if self.lin_vel_obs_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=int(math.ceil(0.7 * self.odom_vel_mean_lag)),
-                    high=int(math.ceil(1.3 * self.odom_vel_mean_lag)) + 1,
+                    low=math.floor(0.77 * self.lin_vel_obs_max_lag),  # Dončić ~~
+                    high=self.lin_vel_obs_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
                     device=self.device,
                 )
             else:
                 rand_lags = torch.zeros(len(env_ids), dtype=torch.int, device=self.device)
-            self.odom_vel_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
+            self.lin_vel_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
 
-            if self.rel_pos_mean_lag > 0:
+            if self.rel_pos_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=int(math.ceil(0.7 * self.rel_pos_mean_lag)),
-                    high=int(math.ceil(1.3 * self.rel_pos_mean_lag)) + 1,
+                    low=math.floor(0.77 * self.rel_pos_max_lag),
+                    high=self.rel_pos_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
                     device=self.device,
@@ -922,7 +920,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
             rel_pos_b_noisy_with_observability = torch.cat([rel_pos_b_noisy, observability_mask.unsqueeze(-1)], dim=-1).reshape(B, N * 4)
 
-            delayed_lin_vel_w_noisy = self.odom_vel_delay[agent_i].compute(lin_vel_w_noisy)
+            delayed_lin_vel_w_noisy = self.lin_vel_delay[agent_i].compute(lin_vel_w_noisy)
             delayed_rel_pos_b_noisy[agent_i] = self.rel_pos_delay[agent_i].compute(rel_pos_b_noisy_with_observability)
 
             curr_observations[agent_i] = torch.cat(
@@ -953,7 +951,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         stacked_observations = {}
         reset_idx = self.reset_history_buffer
         dont_reset_idx = ~self.reset_history_buffer
-        for agent in self.cfg.possible_agents:
+        for agent in self.possible_agents:
             buf = self.observation_buffer[agent]
 
             if reset_idx.any():
@@ -966,21 +964,21 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 buf[-1, dont_reset_idx] = curr_observations[agent][dont_reset_idx]
 
             # Record the lateset observable relative positions since the previous scrolling of the buffer
-            rel_pos = delayed_rel_pos_b_noisy[agent_i]
+            rel_pos = delayed_rel_pos_b_noisy[agent]
             last_observable_rel_pos = self.last_observable_relative_positions[agent]
             for j in range(self.cfg.num_drones - 1):
                 rel_pos_j = rel_pos[:, 4 * j : 4 * (j + 1)]
                 last_observable_rel_pos_j = last_observable_rel_pos[:, 4 * j : 4 * (j + 1)]
 
                 # Identify observable relative positions
-                mask = rel_pos_j[:, -1] == 1.0
+                mask = rel_pos_j[:, -1] > 0.5
                 last_observable_rel_pos_j[mask] = rel_pos_j[mask].clone()
 
         scroll_buffer_idx = (self.scroll_counter % self.cfg.history_buffer_scroll_decimation == 0) & dont_reset_idx
         self_obs_dim = int(self.cfg.self_observation_dim)
         if scroll_buffer_idx.any():
 
-            for agent in self.cfg.possible_agents:
+            for agent in self.possible_agents:
                 buf = self.observation_buffer[agent]
 
                 # Scroll the buffer
@@ -994,7 +992,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             self.scroll_counter[scroll_buffer_idx] = 0
         self.scroll_counter += 1
 
-        for agent in self.cfg.possible_agents:
+        for agent in self.possible_agents:
             buf = self.observation_buffer[agent]
             stacked_observations[agent] = buf.permute(1, 0, 2).reshape(self.num_envs, -1)
         end = time.perf_counter()
