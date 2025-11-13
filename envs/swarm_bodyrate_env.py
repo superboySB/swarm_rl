@@ -19,7 +19,7 @@ from isaaclab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
-from isaaclab.utils import configclass, DelayBuffer
+from isaaclab.utils import configclass, CircularBuffer, DelayBuffer
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 from isaaclab.utils.math import quat_inv, quat_apply
 
@@ -95,8 +95,6 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     render_decimation = max(1, physics_freq // gui_render_freq)
     clip_action = 1.0
     history_length = 3
-    history_buffer_interval = 0.02
-    history_buffer_scroll_decimation = max(1, int(round(history_buffer_interval * action_freq)))
     self_observation_dim = 17
     relative_observation_dim = 4
     transient_observasion_dim = self_observation_dim + relative_observation_dim * (num_drones - 1)
@@ -158,7 +156,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         super().__init__(cfg, render_mode, **kwargs)
         logger.info(f"Action decimation = {self.cfg.decimation}")
         logger.info(f"Controller decimation = {self.cfg.control_decimation}")
-        logger.info(f"History buffer scroll decimation = {self.cfg.history_buffer_scroll_decimation}")
 
         self.goals = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.prev_dist_to_goals = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.cfg.possible_agents}
@@ -215,9 +212,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.relative_positions_w = {
             i: {j: torch.zeros(self.num_envs, 3, device=self.device) for j in range(self.cfg.num_drones) if j != i} for i in range(self.cfg.num_drones)
         }
-        self.last_observable_relative_positions = {
-            agent: torch.zeros(self.num_envs, self.cfg.relative_observation_dim * (self.cfg.num_drones - 1), device=self.device) for agent in self.cfg.possible_agents
-        }
         self.rel_pos_w_noisy_with_observability = {}  # For visualization only
 
         # Delay for observation
@@ -242,11 +236,15 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             for agent in self.cfg.possible_agents
         }
 
-        self.reset_history_buffer = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.observation_buffer = {
-            agent: torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_observasion_dim, device=self.device) for agent in self.cfg.possible_agents
+        # Sliding window for observation
+        self.observation_windows = {
+            agent: CircularBuffer(
+                max_len=self.cfg.history_length,
+                batch_size=self.num_envs,
+                device=self.device,
+            )
+            for agent in self.cfg.possible_agents
         }
-        self.scroll_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # Logging
         self.episode_sums = {}
@@ -290,9 +288,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
-        # TODO: Where would it make more sense to place ⬇️?
-        self.reset_history_buffer[:] = False
-
         for agent in self.possible_agents:
             # Denormalize and clip the input signal
             self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
@@ -680,12 +675,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 rand_lags = torch.zeros(len(env_ids), dtype=torch.int, device=self.device)
             self.rel_pos_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
 
-        if self.cfg.realistic_ctrl:
-            self.controller.reset(self.env_ids_to_ctrl_ids(env_ids))
-
-        # Most (but only most) of the time self.reset_history_buffer is equal to self.reset_buf
-        self.reset_history_buffer[env_ids] = True
-        self.scroll_counter[env_ids] = 0
+            self.observation_windows[agent].reset(env_ids)
 
         # Update relative positions
         for i, agent_i in enumerate(self.possible_agents):
@@ -693,8 +683,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 if i == j:
                     continue
                 self.relative_positions_w[i][j][env_ids] = self.robots[agent_j].data.root_pos_w[env_ids] - self.robots[agent_i].data.root_pos_w[env_ids]
-
-            self.last_observable_relative_positions[agent_i][env_ids] = torch.zeros_like(self.last_observable_relative_positions[agent_i][env_ids])
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         # Reset goal after _get_rewards before _get_observations and _get_states
@@ -836,10 +824,9 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         logger.debug(f"Resetting goals takes {end - start:.5f}s")
 
         start = time.perf_counter()
+        stacked_observations = {}
         sin_max = math.sin(math.radians(self.cfg.max_angle_of_view))
         max_vis = self.cfg.max_visible_distance
-        delayed_rel_pos_b_noisy = {}
-        curr_observations = {}
         for i, agent_i in enumerate(self.possible_agents):
             # Add noise to linear velocity observation
             lin_vel_w = self.robots[agent_i].data.root_lin_vel_w[:, :2]
@@ -921,18 +908,21 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             rel_pos_b_noisy_with_observability = torch.cat([rel_pos_b_noisy, observability_mask.unsqueeze(-1)], dim=-1).reshape(B, N * 4)
 
             delayed_lin_vel_w_noisy = self.lin_vel_delay[agent_i].compute(lin_vel_w_noisy)
-            delayed_rel_pos_b_noisy[agent_i] = self.rel_pos_delay[agent_i].compute(rel_pos_b_noisy_with_observability)
+            delayed_rel_pos_b_noisy_with_observability = self.rel_pos_delay[agent_i].compute(rel_pos_b_noisy_with_observability)
 
-            curr_observations[agent_i] = torch.cat(
+            obs = torch.cat(
                 [
                     self.actions[agent_i].clone(),
                     self.goals[agent_i] - self.robots[agent_i].data.root_pos_w,
                     self.robots[agent_i].data.root_quat_w.clone(),
                     delayed_lin_vel_w_noisy,  # TODO: Try to discard velocity observations to reduce sim2real gap
-                    delayed_rel_pos_b_noisy[agent_i].clone(),
+                    delayed_rel_pos_b_noisy_with_observability,
                 ],
                 dim=1,
             )
+
+            self.observation_windows[agent_i].append(obs)
+            stacked_observations[agent_i] = self.observation_windows[agent_i].buffer.flatten(1)
 
             if self.cfg.debug_vis_rel_pos:
                 # Convert noisy relative positions back to world frame for visualization
@@ -946,57 +936,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         end = time.perf_counter()
         logger.debug(f"Generating observations takes {end - start:.5f}s")
 
-        # Scroll or reset (fill in the first frame) the observation buffer
-        start = time.perf_counter()
-        stacked_observations = {}
-        reset_idx = self.reset_history_buffer
-        dont_reset_idx = ~self.reset_history_buffer
-        for agent in self.possible_agents:
-            buf = self.observation_buffer[agent]
-
-            if reset_idx.any():
-                # Reset the buffer by filling in the first observation
-                curr_observation = curr_observations[agent].unsqueeze(0)
-                buf[:, reset_idx] = curr_observation[:, reset_idx].repeat(self.cfg.history_length, 1, 1)
-
-            if dont_reset_idx.any():
-                # Update the final frame of the buffer with the latest observation
-                buf[-1, dont_reset_idx] = curr_observations[agent][dont_reset_idx]
-
-            # Record the lateset observable relative positions since the previous scrolling of the buffer
-            rel_pos = delayed_rel_pos_b_noisy[agent]
-            last_observable_rel_pos = self.last_observable_relative_positions[agent]
-            for j in range(self.cfg.num_drones - 1):
-                rel_pos_j = rel_pos[:, 4 * j : 4 * (j + 1)]
-                last_observable_rel_pos_j = last_observable_rel_pos[:, 4 * j : 4 * (j + 1)]
-
-                # Identify observable relative positions
-                mask = rel_pos_j[:, -1] > 0.5
-                last_observable_rel_pos_j[mask] = rel_pos_j[mask].clone()
-
-        scroll_buffer_idx = (self.scroll_counter % self.cfg.history_buffer_scroll_decimation == 0) & dont_reset_idx
-        self_obs_dim = int(self.cfg.self_observation_dim)
-        if scroll_buffer_idx.any():
-
-            for agent in self.possible_agents:
-                buf = self.observation_buffer[agent]
-
-                # Scroll the buffer
-                buf[:-1, scroll_buffer_idx] = buf[1:, scroll_buffer_idx].clone()
-
-                # Fill the penultimate frame of the buffer with the lateset observable relative positions since the previous scrolling
-                # (Because the latest relative positions might not be observable and rel pos obs is precious
-                buf[-2, scroll_buffer_idx, self_obs_dim:] = self.last_observable_relative_positions[agent][scroll_buffer_idx].clone()
-                self.last_observable_relative_positions[agent][scroll_buffer_idx] = torch.zeros_like(self.last_observable_relative_positions[agent][scroll_buffer_idx])
-
-            self.scroll_counter[scroll_buffer_idx] = 0
-        self.scroll_counter += 1
-
-        for agent in self.possible_agents:
-            buf = self.observation_buffer[agent]
-            stacked_observations[agent] = buf.permute(1, 0, 2).reshape(self.num_envs, -1)
-        end = time.perf_counter()
-        logger.debug(f"Scrolling observation buffer takes {end - start:.5f}s")
         return stacked_observations
 
     def _get_states(self):
