@@ -44,6 +44,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
 
     # Mission settings
     flight_range = 5.0
+    flight_range_margin = 0.25
     flight_altitude = 1.0  # Desired flight altitude
     safe_dist = 1.0
     collide_dist = 0.5
@@ -61,27 +62,32 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     lissajous_cfg = LissajousConfig()
     # Params for mission crossover
     fix_range = False
-    uniformly_distributed_prob = 0.5
+    uniformly_distributed_prob = 1.0
 
     # Observation parameters
-    lin_vel_obs_delay_ms = 0.0  # VIO delay: 5ms with imu propogation
-    rel_pos_obs_delay_ms = 0.0  # Seeker Omni-4P streaming delay: 160ms + YOLO delay: 40ms
+    lin_vel_obs_delay_ms = 40.0
+    rel_pos_obs_delay_ms = 40.0
     max_visible_distance = 5.0
     max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
     # Domain randomization
     enable_domain_randomization = True
-    lin_vel_noise_std = 0.0
-    min_dist_noise_std = 0.0
-    max_dist_noise_std = 0.0
-    min_bearing_noise_std = 0.0
-    max_bearing_noise_std = 0.0
-    drop_prob = 0.0
+    lin_vel_noise_std = 0.1
+    min_dist_noise_std = 0.05
+    max_dist_noise_std = 1.0
+    min_bearing_noise_std = 0.1
+    max_bearing_noise_std = 0.15
+    drop_prob = 0.05
+
+    # RVO observation delay
+    enable_state_delay = False
+    state_pos_delay_ms = rel_pos_obs_delay_ms
+    state_vel_delay_ms = lin_vel_obs_delay_ms
 
     # Parameters for environment and agents
     episode_length_s = 300.0
     physics_freq = 200
-    action_freq = 50
-    gui_render_freq = 50
+    action_freq = 200
+    gui_render_freq = 200
     num_drones = 13  # Number of drones per environment
     decimation = max(1, math.ceil(physics_freq / action_freq))  # Environment decimation
     render_decimation = max(1, physics_freq // gui_render_freq)
@@ -231,6 +237,29 @@ class SwarmVelEnv(DirectMARLEnv):
             for agent in self.cfg.possible_agents
         }
 
+        # Delay for state (RVO observation)
+        if self.cfg.enable_state_delay:
+            self.state_pos_max_lag = 0 if self.cfg.state_pos_delay_ms <= 0.0 else int(math.ceil(self.cfg.state_pos_delay_ms * 1e-3 / self.step_dt))
+            logger.info(f"Max state position delay = {self.state_pos_max_lag} env steps")
+            self.state_pos_delay = {
+                agent: DelayBuffer(
+                    history_length=self.state_pos_max_lag,
+                    batch_size=self.num_envs,
+                    device=self.device,
+                )
+                for agent in self.cfg.possible_agents
+            }
+            self.state_vel_max_lag = 0 if self.cfg.state_vel_delay_ms <= 0.0 else int(math.ceil(self.cfg.state_vel_delay_ms * 1e-3 / self.step_dt))
+            logger.info(f"Max state velocity delay = {self.state_vel_max_lag} env steps")
+            self.state_vel_delay = {
+                agent: DelayBuffer(
+                    history_length=self.state_vel_max_lag,
+                    batch_size=self.num_envs,
+                    device=self.device,
+                )
+                for agent in self.cfg.possible_agents
+            }
+
         # Logging
         self.episode_sums = {}
 
@@ -271,7 +300,7 @@ class SwarmVelEnv(DirectMARLEnv):
             # Denormalize and clip the input signal
             self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
             v_xy_desired = self.actions[agent] * self.cfg.v_max[agent]
-            speed_xy = torch.norm(v_xy_desired, dim=1, keepdim=True)
+            speed_xy = torch.linalg.norm(v_xy_desired, dim=1, keepdim=True)
             clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
             self.v_desired[agent][:, :2] = v_xy_desired / clip_scale
 
@@ -441,7 +470,7 @@ class SwarmVelEnv(DirectMARLEnv):
         start = time.perf_counter()
         # The migration mission: huddled init states + unified random target
         if len(mission_0_ids) > 0:
-            rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
+            rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0] - self.cfg.flight_range_margin
 
             if self.cfg.use_custom_traj:
                 # Randomly select a trajectory from the library
@@ -479,7 +508,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
         # The crossover mission: init states on a circle + target on the opposite side
         if len(mission_1_ids) > 0:
-            r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0] - 0.25
+            r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0] - self.cfg.flight_range_margin
             if self.cfg.fix_range:
                 r_min = r_max
             else:
@@ -529,7 +558,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
         # The chaotic mission: random init states + respective random target
         if len(mission_2_ids) > 0:
-            rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - 0.25
+            rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - self.cfg.flight_range_margin
 
             rand_init_p_mis2 = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
             done = torch.zeros(len(mission_2_ids), dtype=torch.bool, device=self.device)
@@ -655,6 +684,33 @@ class SwarmVelEnv(DirectMARLEnv):
 
             self.observation_windows[agent].reset(env_ids)
 
+            if self.cfg.enable_state_delay:
+                self.state_pos_delay[agent].reset(env_ids)
+                self.state_vel_delay[agent].reset(env_ids)
+
+                if self.state_pos_max_lag > 0:
+                    rand_lags = torch.randint(
+                        low=math.floor(0.77 * self.state_pos_max_lag),
+                        high=self.state_pos_max_lag + 1,
+                        size=(len(env_ids),),
+                        dtype=torch.int,
+                        device=self.device,
+                    )
+                else:
+                    rand_lags = torch.zeros(len(env_ids), dtype=torch.int, device=self.device)
+                self.state_pos_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
+
+                if self.state_vel_max_lag > 0:
+                    rand_lags = torch.randint(
+                        low=math.floor(0.77 * self.state_vel_max_lag),
+                        high=self.state_vel_max_lag + 1,
+                        size=(len(env_ids),),
+                        dtype=torch.int,
+                        device=self.device,
+                    )
+                else:
+                    rand_lags = torch.zeros(len(env_ids), dtype=torch.int, device=self.device)
+                self.state_vel_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
 
         # Update relative positions
         for i, agent_i in enumerate(self.possible_agents):
@@ -710,7 +766,7 @@ class SwarmVelEnv(DirectMARLEnv):
                 mission_2_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 2]  # The chaotic mission
 
                 if len(mission_0_ids) > 0 and not self.cfg.use_custom_traj:
-                    rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
+                    rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0] - self.cfg.flight_range_margin
 
                     unified_goal_xy = self.unified_goal_xy[mission_0_ids]
                     unified_new_goal_xy = torch.zeros(len(mission_0_ids), 2, device=self.device)
@@ -723,7 +779,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
                         active_ids = active.nonzero(as_tuple=False).squeeze(-1)
                         unified_new_goal_xy[active_ids] = torch.zeros_like(unified_new_goal_xy[active_ids]).uniform_(-rg, rg)
-                        dist = torch.norm(unified_goal_xy[active_ids] - unified_new_goal_xy[active_ids])
+                        dist = torch.linalg.norm(unified_goal_xy[active_ids] - unified_new_goal_xy[active_ids])
 
                         ok = dist > 1.414 * rg
                         if torch.any(ok):
@@ -760,7 +816,7 @@ class SwarmVelEnv(DirectMARLEnv):
                     self.goals[agent][mission_1_ids] += self.terrain.env_origins[mission_1_ids]
 
                 if len(mission_2_ids) > 0:
-                    rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - 0.25
+                    rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - self.cfg.flight_range_margin
 
                     rand_goal_p = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
                     for i_, agent_ in enumerate(self.possible_agents):
@@ -853,13 +909,13 @@ class SwarmVelEnv(DirectMARLEnv):
 
                     # Apply a gradually increasing noise to the distance as it grows
                     std_dist = self.cfg.min_dist_noise_std + dist_normalized * (self.cfg.max_dist_noise_std - self.cfg.min_dist_noise_std)
-                    dist_noisy = (dist + torch.randn_like(dist) * std_dist).clamp_min(0.0)
+                    dist_noisy = dist + torch.randn_like(dist) * std_dist
 
                     # Similarly apply noise to the bearing in spherical coordinates
                     x, y, z = rel_pos[:, 0], rel_pos[:, 1], rel_pos[:, 2]
                     az = torch.atan2(y, x)  # Azimuth angle
                     el = torch.atan2(z, torch.sqrt(x * x + y * y))  # Elevation angle
-                    std_bearing = self.cfg.min_bearing_noise_std + dist_normalized * (self.cfg.max_bearing_noise_std - self.cfg.min_bearing_noise_std)
+                    std_bearing = self.cfg.max_bearing_noise_std - dist_normalized * (self.cfg.max_bearing_noise_std - self.cfg.min_bearing_noise_std)
                     az_noisy = az + torch.randn_like(az) * std_bearing
                     el_noisy = el + torch.randn_like(el) * std_bearing
 
@@ -924,10 +980,18 @@ class SwarmVelEnv(DirectMARLEnv):
             curr_state.extend(
                 [
                     self.actions[agent].clone(),
-                    self.robots[agent].data.root_pos_w - self.terrain.env_origins,
+                    (
+                        self.state_pos_delay[agent].compute(self.robots[agent].data.root_pos_w - self.terrain.env_origins)
+                        if self.cfg.enable_state_delay
+                        else self.robots[agent].data.root_pos_w - self.terrain.env_origins
+                    ),
                     self.goals[agent] - self.robots[agent].data.root_pos_w,
                     self.robots[agent].data.root_quat_w.clone(),
-                    self.robots[agent].data.root_vel_w.clone(),
+                    (
+                        self.state_vel_delay[agent].compute(self.robots[agent].data.root_vel_w)
+                        if self.cfg.enable_state_delay
+                        else self.robots[agent].data.root_vel_w.clone()
+                    ),
                 ]
             )
         curr_state = torch.cat(curr_state, dim=1)

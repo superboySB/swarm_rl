@@ -39,7 +39,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 10.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 100.0
+    mutual_collision_penalty_weight = 150.0
     mutual_collision_avoidance_soft_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_norm_penalty_weight = 1.0
@@ -50,6 +50,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
 
     # Mission settings
     flight_range = 2.5
+    flight_range_margin = 0.25
     flight_altitude = 1.0  # Desired flight altitude
     safe_dist = 0.8
     collide_dist = 0.4
@@ -61,7 +62,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
-    torque_ctrl_delay_ms = 0.0  # Angular velocity controller delay of PX4-Autopilot: 20 ~ 50ms
+    torque_ctrl_delay_ms = 10.0  # Angular velocity controller delay of PX4-Autopilot: 20 ~ 50ms
     realistic_ctrl = True
     # Params for mission migration
     use_custom_traj = True  # Whether to use custom trajectory for migration mission
@@ -80,10 +81,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     enable_domain_randomization = True
     lin_vel_noise_std = 0.1
     min_dist_noise_std = 0.05
-    max_dist_noise_std = 0.5
-    min_bearing_noise_std = 0.005
-    max_bearing_noise_std = 0.05
-    drop_prob = 0.0
+    max_dist_noise_std = 1.0
+    min_bearing_noise_std = 0.1
+    max_bearing_noise_std = 0.15
+    drop_prob = 0.05
 
     # Parameters for environment and agents
     episode_length_s = 300.0
@@ -106,7 +107,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 2 for agent in possible_agents}
     a_max = {agent: 10.0 for agent in possible_agents}
-    v_max = {agent: 2.5 for agent in possible_agents}
+    v_max = {agent: 3.5 for agent in possible_agents}
 
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
@@ -147,7 +148,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
-    debug_vis_collide_dist = True
+    debug_vis_collide_dist = False
     debug_vis_rel_pos = False
 
 
@@ -332,7 +333,7 @@ class SwarmAccEnv(DirectMARLEnv):
             # Denormalize and clip the input signal
             self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
             a_xy_desired = self.actions[agent] * self.cfg.a_max[agent]
-            norm_xy = torch.norm(a_xy_desired, dim=1, keepdim=True)
+            norm_xy = torch.linalg.norm(a_xy_desired, dim=1, keepdim=True)
             clip_scale = torch.clamp(norm_xy / self.cfg.a_max[agent], min=1.0)
             self.a_desired[agent][:, :2] = a_xy_desired / clip_scale
 
@@ -342,7 +343,7 @@ class SwarmAccEnv(DirectMARLEnv):
             # Clip velocity cmd
             prev_v_desired[agent] = self.v_desired[agent].clone()
             self.v_desired[agent][:, :2] += self.a_desired[agent][:, :2] * self.physics_dt
-            speed_xy = torch.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
+            speed_xy = torch.linalg.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
             clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
             self.v_desired[agent][:, :2] /= clip_scale
 
@@ -578,7 +579,7 @@ class SwarmAccEnv(DirectMARLEnv):
         start = time.perf_counter()
         # The migration mission: huddled init states + unified random target
         if len(mission_0_ids) > 0:
-            rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
+            rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0] - self.cfg.flight_range_margin
 
             if self.cfg.use_custom_traj:
                 # Randomly select a trajectory from the library
@@ -616,7 +617,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
         # The crossover mission: init states on a circle + target on the opposite side
         if len(mission_1_ids) > 0:
-            r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0] - 0.25
+            r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0] - self.cfg.flight_range_margin
             if self.cfg.fix_range:
                 r_min = r_max
             else:
@@ -666,7 +667,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
         # The chaotic mission: random init states + respective random target
         if len(mission_2_ids) > 0:
-            rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - 0.25
+            rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - self.cfg.flight_range_margin
 
             rand_init_p_mis2 = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
             done = torch.zeros(len(mission_2_ids), dtype=torch.bool, device=self.device)
@@ -775,7 +776,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
                 if self.torque_delay_max_lag > 0:
                     rand_lags = torch.randint(
-                        low=math.floor(0.4 * self.torque_delay_max_lag),  # 20 ~ 50ms
+                        low=math.floor(0.4 * self.torque_delay_max_lag),
                         high=self.torque_delay_max_lag + 1,
                         size=(len(env_ids),),
                         dtype=torch.int,
@@ -878,7 +879,7 @@ class SwarmAccEnv(DirectMARLEnv):
                 mission_2_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 2]  # The chaotic mission
 
                 if len(mission_0_ids) > 0 and not self.cfg.use_custom_traj:
-                    rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0]
+                    rg = self.cfg.flight_range - self.success_dist_thr[mission_0_ids][0] - self.cfg.flight_range_margin
 
                     unified_goal_xy = self.unified_goal_xy[mission_0_ids]
                     unified_new_goal_xy = torch.zeros(len(mission_0_ids), 2, device=self.device)
@@ -891,7 +892,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
                         active_ids = active.nonzero(as_tuple=False).squeeze(-1)
                         unified_new_goal_xy[active_ids] = torch.zeros_like(unified_new_goal_xy[active_ids]).uniform_(-rg, rg)
-                        dist = torch.norm(unified_goal_xy[active_ids] - unified_new_goal_xy[active_ids])
+                        dist = torch.linalg.norm(unified_goal_xy[active_ids] - unified_new_goal_xy[active_ids])
 
                         ok = dist > 1.414 * rg
                         if torch.any(ok):
@@ -928,7 +929,7 @@ class SwarmAccEnv(DirectMARLEnv):
                     self.goals[agent][mission_1_ids] += self.terrain.env_origins[mission_1_ids]
 
                 if len(mission_2_ids) > 0:
-                    rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - 0.25
+                    rg = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - self.cfg.flight_range_margin
 
                     rand_goal_p = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
                     for i_, agent_ in enumerate(self.possible_agents):
@@ -1021,13 +1022,13 @@ class SwarmAccEnv(DirectMARLEnv):
 
                     # Apply a gradually increasing noise to the distance as it grows
                     std_dist = self.cfg.min_dist_noise_std + dist_normalized * (self.cfg.max_dist_noise_std - self.cfg.min_dist_noise_std)
-                    dist_noisy = (dist + torch.randn_like(dist) * std_dist).clamp_min(0.0)
+                    dist_noisy = dist + torch.randn_like(dist) * std_dist
 
                     # Similarly apply noise to the bearing in spherical coordinates
                     x, y, z = rel_pos[:, 0], rel_pos[:, 1], rel_pos[:, 2]
                     az = torch.atan2(y, x)  # Azimuth angle
                     el = torch.atan2(z, torch.sqrt(x * x + y * y))  # Elevation angle
-                    std_bearing = self.cfg.min_bearing_noise_std + dist_normalized * (self.cfg.max_bearing_noise_std - self.cfg.min_bearing_noise_std)
+                    std_bearing = self.cfg.max_bearing_noise_std - dist_normalized * (self.cfg.max_bearing_noise_std - self.cfg.min_bearing_noise_std)
                     az_noisy = az + torch.randn_like(az) * std_bearing
                     el_noisy = el + torch.randn_like(el) * std_bearing
 

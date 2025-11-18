@@ -744,7 +744,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
                         active_ids = active.nonzero(as_tuple=False).squeeze(-1)
                         unified_new_goal_xy[active_ids] = torch.zeros_like(unified_new_goal_xy[active_ids]).uniform_(-rg, rg)
-                        dist = torch.norm(unified_goal_xy[active_ids] - unified_new_goal_xy[active_ids])
+                        dist = torch.linalg.norm(unified_goal_xy[active_ids] - unified_new_goal_xy[active_ids])
 
                         ok = dist > 1.414 * rg
                         if torch.any(ok):

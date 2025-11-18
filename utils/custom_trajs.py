@@ -151,8 +151,8 @@ def compute_lissajous_inner_pts(p_odom, p_init, A_params=None, B_params=None, a_
 
     first_sample_point = inner_pts[:, :, 0]
     last_sample_point = inner_pts[:, :, -1]
-    distance_to_first = torch.norm(first_sample_point - p_init, dim=1)
-    distance_from_last = torch.norm(p_init - last_sample_point, dim=1)
+    distance_to_first = torch.linalg.norm(first_sample_point - p_init, dim=1)
+    distance_from_last = torch.linalg.norm(p_init - last_sample_point, dim=1)
     time_to_first = distance_to_first / max_exec_speed * 3
     time_from_last = distance_from_last / max_exec_speed * 3
 

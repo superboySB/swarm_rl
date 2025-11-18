@@ -163,7 +163,7 @@ def main():
                 elif delta_pose[1] < 0:
                     actions[:, 1] = -args_cli.velocity
 
-                speed = torch.norm(actions, dim=1, keepdim=True)
+                speed = torch.linalg.norm(actions, dim=1, keepdim=True)
                 clip_scale = torch.where(speed > env_cfg.v_max, env_cfg.v_max / (speed + 1e-6), torch.ones_like(speed))
                 actions *= clip_scale
 
@@ -178,7 +178,7 @@ def main():
                 elif delta_pose[1] < 0:
                     actions[:, 1] = -args_cli.acceleration
 
-                norm = torch.norm(actions, dim=1, keepdim=True)
+                norm = torch.linalg.norm(actions, dim=1, keepdim=True)
                 clip_scale = torch.where(norm > env_cfg.v_max, env_cfg.v_max / (norm + 1e-6), torch.ones_like(norm))
                 actions *= clip_scale
 

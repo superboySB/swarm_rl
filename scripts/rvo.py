@@ -9,6 +9,8 @@ from isaaclab.app import AppLauncher
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Run RVO in swarm velocity environment.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
+parser.add_argument("--obs_delay", action="store_true", default=False, help="Enable observation delay in RVO.")
+parser.add_argument("--dr", action="store_true", default=False, help="Enable domain randomization in RVO.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument(
     "--verbosity", type=str, default="INFO", choices=["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"], help="Verbosity level of the custom logger."
@@ -32,7 +34,7 @@ from loguru import logger
 import math
 import rclpy
 import torch
-from typing import Dict, List
+from typing import Dict
 
 from envs import swarm_vel_env
 from isaaclab_tasks.utils import parse_env_cfg
@@ -43,66 +45,56 @@ from isaaclab_tasks.utils import parse_env_cfg
 # =========================
 
 
-@torch.no_grad()
-def rvo(state: torch.Tensor, env_cfg, params: Dict = None) -> Dict[str, torch.Tensor]:
+def rvo(state: torch.Tensor, env_cfg) -> Dict[str, torch.Tensor]:
     """
     Args:
         state: Tensor[ num_envs, state_dim ], concatenated in the order:
-               [ a0_action(2), a0_pos(3), a0_goal_rel(3), a0_quat(4), a0_root_vel(6),
-                 a1_action(2), a1_pos(3), ... concatenated for all agents ]
-        env_cfg: uses env_cfg.possible_agents (same order as in `state`)
-        params:
-            {
-              "dt": simulation time step (seconds),
-              "time_horizon": human-human time horizon T,
-              "neighbor_dist": neighborhood radius (meters),
-              "radius": agent radius (meters) or Tensor[num_agents] / Tensor[num_envs, num_agents],
-              "max_speed": speed limit (m/s) or Tensor[num_agents] / Tensor[num_envs, num_agents],
-              # Optional: if you want to be more conservative, set "inflation": extra safety margin (meters), default 0
-            }
+               [ agent0_action(2), agent0_pos(3), agent0_goal_rel(3), agent0_quat(4), agent0_vel(6),
+                 agent1_action(2), agent1_pos(3), agent1_goal_rel(3), agent1_quat(4), agent1_vel(6),
+                 ..., concatenated for all agents ]
+        env_cfg: configuration for the swarm velocity environment
+
     Returns:
         actions: { agent_id: Tensor[num_envs, 2] }, 2D velocity commands in the world frame
     """
 
-    if params is None:
-        params = {}
-    dt = float(params.get("dt", 0.01))  # seconds
-    T_h = float(params.get("time_horizon", 5.0))  # seconds
-    neighbor_dist = float(params.get("neighbor_dist", 5.0))  # meters
-    radius = params.get("radius", 0.25)  # meters
-    max_speed = params.get("max_speed", 5.0)  # m/s
-    success_threshold = float(params.get("success_threshold", 0.1))  # meters
-    inflation = float(params.get("inflation", 0.0))
+    step_dt = 1.0 / env_cfg.action_freq  # seconds
+    time_horizon = 10.0  # seconds
+    neighbor_dist = env_cfg.max_visible_distance  # meters
+    radius = env_cfg.collide_dist / 2  # meters
+    max_speed = env_cfg.v_max[env_cfg.possible_agents[0]]  # m/s
+    success_threshold = env_cfg.success_distance_threshold / 5  # meters
+    inflation = 0.0
 
-    agent_ids: List[str] = list(env_cfg.possible_agents)
-    num_envs = state.shape[0]
+    agent_ids = list(env_cfg.possible_agents)
     num_agents = len(agent_ids)
+    num_envs = env_cfg.scene.num_envs
 
     # Parse slices of state
     d_action = 2
     d_pos = 3
     d_goal = 3
     d_quat = 4
-    d_rvel = 6  # linear vel (3) + angular vel (3)
-    stride = d_action + d_pos + d_goal + d_quat + d_rvel
+    d_vel = 6  # linear vel (3) + angular vel (3)
+    stride = d_action + d_pos + d_goal + d_quat + d_vel
 
     assert state.shape[1] == stride * num_agents, f"state_dim={state.shape[1]} does not match num_agents={num_agents}, expected {stride * num_agents} #^#"
-
-    def take_chunk(i, off, dim):
-        s = i * stride + off
-        return state[:, s : s + dim]
 
     # For each agent, take xy position, xy linear velocity, and the xy components of the goal-relative vector
     pos_xy = torch.empty(num_envs, num_agents, 2, device=state.device, dtype=state.dtype)
     vel_xy = torch.empty_like(pos_xy)
     goal_rel_xy = torch.empty_like(pos_xy)
 
+    def take_chunk(i, off, dim):
+        s = i * stride + off
+        return state[:, s : s + dim]
+
     for i in range(num_agents):
         pos = take_chunk(i, d_action, d_pos)  # (N,3)
         goal_rel = take_chunk(i, d_action + d_pos, d_goal)  # (N,3)
-        root_vel = take_chunk(i, d_action + d_pos + d_goal + d_quat, d_rvel)  # (N,6)
+        vel = take_chunk(i, d_action + d_pos + d_goal + d_quat, d_vel)  # (N,6)
         pos_xy[:, i] = pos[:, :2]
-        vel_xy[:, i] = root_vel[:, :2]
+        vel_xy[:, i] = vel[:, :2]
         goal_rel_xy[:, i] = goal_rel[:, :2]
 
     # Broadcast parameters to (N,A)
@@ -130,10 +122,10 @@ def rvo(state: torch.Tensor, env_cfg, params: Dict = None) -> Dict[str, torch.Te
 
     R = to_tensor_like(radius + inflation, pos_xy)  # (N,A,1)
     Vmax = to_tensor_like(max_speed, pos_xy)  # (N,A,1)
-    invT = torch.as_tensor(1.0 / max(T_h, 1e-6), device=state.device, dtype=state.dtype)
+    invT = torch.as_tensor(1.0 / max(time_horizon, 1e-6), device=state.device, dtype=state.dtype)
 
     # Preferred velocity: toward the goal; magnitude = Vmax
-    goal_norm = torch.norm(goal_rel_xy, dim=-1, keepdim=True).clamp_min(1e-12)
+    goal_norm = torch.linalg.norm(goal_rel_xy, dim=-1, keepdim=True).clamp_min(1e-12)
     pref_dir = goal_rel_xy / goal_norm
     pref_speed = Vmax
     pref_vel = pref_dir * pref_speed  # (N,A,2)
@@ -162,6 +154,15 @@ def rvo(state: torch.Tensor, env_cfg, params: Dict = None) -> Dict[str, torch.Te
 
     new_vel = torch.empty_like(pref_vel)  # (N,A,2)
 
+    # Param for domain randomization
+    if args_cli.dr:
+        rel_vel_noise_std = env_cfg.lin_vel_noise_std
+        min_dist_noise_std = env_cfg.min_dist_noise_std
+        max_dist_noise_std = env_cfg.max_dist_noise_std
+        min_bearing_noise_std = env_cfg.min_bearing_noise_std
+        max_bearing_noise_std = env_cfg.max_bearing_noise_std
+        drop_prob = env_cfg.drop_prob
+
     # ========= Main loop: solve ORCA per env and per agent =========
     for e in range(num_envs):
         # Snapshot for env_e
@@ -174,13 +175,32 @@ def rvo(state: torch.Tensor, env_cfg, params: Dict = None) -> Dict[str, torch.Te
 
         for i in range(num_agents):
             # Build ORCA lines for agent_i
-            points: List[torch.Tensor] = []
-            dirs: List[torch.Tensor] = []
+            points, dirs = [], []
 
             js = torch.nonzero(neigh[i], as_tuple=False).squeeze(-1).tolist()
             for j in js:
                 rel_pos = P[j] - P[i]  # (2,)
                 rel_vel = V[i] - V[j]  # (2,)
+
+                # Domain randomization
+                if args_cli.dr:
+                    if torch.rand((), device=state.device) < drop_prob:
+                        continue
+
+                    rel_vel = rel_vel + torch.randn_like(rel_vel) * rel_vel_noise_std
+
+                    r = torch.linalg.norm(rel_pos)
+                    theta = torch.atan2(rel_pos[1], rel_pos[0])
+
+                    alpha = torch.clamp(r / neighbor_dist, 0.0, 1.0)
+                    r_std = min_dist_noise_std + (max_dist_noise_std - min_dist_noise_std) * alpha
+                    theta_std = max_bearing_noise_std - (max_bearing_noise_std - min_bearing_noise_std) * alpha
+
+                    r_noisy = r + torch.randn((), device=state.device, dtype=state.dtype) * r_std
+                    theta_noisy = theta + torch.randn((), device=state.device, dtype=state.dtype) * theta_std
+
+                    rel_pos = torch.stack((r_noisy * torch.cos(theta_noisy), r_noisy * torch.sin(theta_noisy)), dim=0)
+
                 dist2_ij = torch.dot(rel_pos, rel_pos).item()
                 R_ij = Re[i].item() + Re[j].item()
                 R2_ij = R_ij * R_ij
@@ -218,8 +238,8 @@ def rvo(state: torch.Tensor, env_cfg, params: Dict = None) -> Dict[str, torch.Te
                         dot2 = torch.dot(rel_vel, line_dir).item()
                         u = dot2 * line_dir - rel_vel
                 else:
-                    # Already penetrating: stronger correction using dt
-                    inv_dt = 1.0 / max(dt, 1e-6)
+                    # Already penetrating: stronger correction using step_dt
+                    inv_dt = 1.0 / max(step_dt, 1e-6)
                     w = rel_vel - rel_pos * inv_dt
                     w_len = torch.linalg.norm(w).item() + 1e-12
                     unitW = w / w_len
@@ -345,7 +365,7 @@ def rvo(state: torch.Tensor, env_cfg, params: Dict = None) -> Dict[str, torch.Te
 
             new_vel[e, i] = res_i
 
-    speed = torch.norm(new_vel, dim=-1, keepdim=True)
+    speed = torch.linalg.norm(new_vel, dim=-1, keepdim=True)
     new_vel = torch.where(speed > Vmax, new_vel * (Vmax / (speed + 1e-12)), new_vel)
     new_vel /= Vmax
 
@@ -357,23 +377,23 @@ def main():
     # Create environment configuration
     env_cfg = parse_env_cfg("FAST-Swarm-Vel", device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric)
     env_cfg.fix_range = True
+    env_cfg.flight_range += 100.0
+    env_cfg.flight_range_margin += 100.0
     env_cfg.episode_length_s /= 10.0
+
+    # Enable RVO observation delay
+    # (RVO observations are derived from state
+    if args_cli.obs_delay:
+        env_cfg.enable_state_delay = True
+
     # Create environment
     env = gym.make("FAST-Swarm-Vel", cfg=env_cfg)
     env.reset()
     state = env.unwrapped.state()
 
-    rvo_params = dict(
-        dt=env.unwrapped.step_dt,
-        time_horizon=5.0,
-        neighbor_dist=5.0,
-        radius=env_cfg.collide_dist / 2,
-        max_speed=env_cfg.v_max[env_cfg.possible_agents[0]],
-    )
-
     while simulation_app.is_running():
         with torch.inference_mode():
-            actions = rvo(state, env_cfg, rvo_params)
+            actions = rvo(state, env_cfg)
             env.step(actions)
             state = env.unwrapped.state()
 

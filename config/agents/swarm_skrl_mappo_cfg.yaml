@@ -21,7 +21,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [512, 256, 128, 64]
+        layers: [1024, 512, 256, 128]
         activations: elu
     output: ACTIONS
   value:  # see deterministic_model parameters
@@ -30,7 +30,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [512, 256, 128, 64]
+        layers: [1024, 512, 256, 128]
         activations: elu
     output: ONE
 
@@ -47,7 +47,7 @@ memory:
 agent:
   class: MAPPO
   param_sharing: True
-  rollouts: 100
+  rollouts: 250
   learning_epochs: 5
 
   mini_batches: 50
@@ -57,11 +57,11 @@ agent:
 
   discount_factor: 0.99
   lambda: 0.95
-  learning_rate: 0.001
+  learning_rate: 0.0005
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
-    kl_threshold: 0.015
-    max_lr: 0.001
+    kl_threshold: 0.01
+    max_lr: 0.0005
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
   shared_state_preprocessor: RunningStandardScaler
@@ -75,7 +75,7 @@ agent:
   value_clip: 0.2
   clip_predicted_values: True
   entropy_loss_scale: 0.001
-  value_loss_scale: 5.0
+  value_loss_scale: 1.0
   kl_threshold: 0.0
   rewards_shaper_scale: 1.0
   time_limit_bootstrap: False

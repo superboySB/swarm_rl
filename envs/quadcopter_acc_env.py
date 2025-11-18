@@ -186,7 +186,7 @@ class QuadcopterAccEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self.a_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
         a_xy_desired = self.a_xy_desired_normalized * self.cfg.a_max
-        norm_xy = torch.norm(a_xy_desired, dim=1, keepdim=True)
+        norm_xy = torch.linalg.norm(a_xy_desired, dim=1, keepdim=True)
         clip_scale = torch.clamp(norm_xy / self.cfg.a_max, min=1.0)
         self.a_desired[:, :2] = a_xy_desired / clip_scale
 
@@ -198,7 +198,7 @@ class QuadcopterAccEnv(DirectRLEnv):
 
         self.v_desired[:, :2] += self.a_desired_smoothed[:, :2] * self.physics_dt
         # self.v_desired[:, :2] += self.a_desired[:, :2] * self.physics_dt
-        speed_xy = torch.norm(self.v_desired[:, :2], dim=1, keepdim=True)
+        speed_xy = torch.linalg.norm(self.v_desired[:, :2], dim=1, keepdim=True)
         clip_scale = torch.clamp(speed_xy / self.cfg.v_max, min=1.0)
         self.v_desired[:, :2] /= clip_scale
 
