@@ -21,7 +21,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass, CircularBuffer, DelayBuffer
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
-from isaaclab.utils.math import quat_inv, quat_apply
+from isaaclab.utils.math import quat_inv, quat_apply, quat_mul, quat_from_euler_xyz
 
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils.utils import quat_to_ang_between_z_body_and_z_world
@@ -62,7 +62,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # mission_prob = [0.0, 0.0, 1.0]
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
-    torque_ctrl_delay_ms = 10.0  # Angular velocity controller delay of PX4-Autopilot: 20 ~ 50ms
+    torque_ctrl_delay_ms = 0.0  # Angular velocity controller delay of PX4-Autopilot: 20 ~ 50ms
     realistic_ctrl = True
     # Params for mission migration
     use_custom_traj = True  # Whether to use custom trajectory for migration mission
@@ -73,18 +73,19 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     uniformly_distributed_prob = 0.1
 
     # Observation parameters
-    lin_vel_obs_delay_ms = 20.0  # VIO delay: 5ms with imu propogation
+    odom_delay_ms = 20.0  # VIO delay: 5ms with imu propogation
     rel_pos_obs_delay_ms = 200.0  # Seeker Omni-4P streaming delay: 160ms + YOLO delay: 40ms
     max_visible_distance = 5.0
     max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
     # Domain randomization
     enable_domain_randomization = True
-    lin_vel_noise_std = 0.1
+    odom_lin_vel_noise_std = 0.05
+    odom_rot_noise_std = 0.0
     min_dist_noise_std = 0.05
-    max_dist_noise_std = 1.0
-    min_bearing_noise_std = 0.1
-    max_bearing_noise_std = 0.15
-    drop_prob = 0.05
+    max_dist_noise_std = 0.5
+    min_bearing_noise_std = 0.005
+    max_bearing_noise_std = 0.05
+    drop_prob = 0.0
 
     # Parameters for environment and agents
     episode_length_s = 300.0
@@ -98,7 +99,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     render_decimation = max(1, physics_freq // gui_render_freq)
     clip_action = 1.0
     history_length = 3
-    self_observation_dim = 6
+    self_observation_dim = 10
     relative_observation_dim = 4
     transient_observasion_dim = self_observation_dim + relative_observation_dim * (num_drones - 1)
     observation_spaces = None
@@ -107,7 +108,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 2 for agent in possible_agents}
     a_max = {agent: 10.0 for agent in possible_agents}
-    v_max = {agent: 3.5 for agent in possible_agents}
+    v_max = {agent: 3.0 for agent in possible_agents}
 
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
@@ -148,7 +149,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
-    debug_vis_collide_dist = False
+    debug_vis_collide_dist = True
     debug_vis_rel_pos = False
 
 
@@ -252,12 +253,16 @@ class SwarmAccEnv(DirectMARLEnv):
         }
         self.rel_pos_w_noisy_with_observability = {}  # For visualization only
 
+        # Orienation of odom frames
+        self.odom_frame_quat_w = {agent: torch.zeros(self.num_envs, 4, device=self.device) for agent in self.cfg.possible_agents}
+        self.odom_frame_quat_w_inv = {agent: torch.zeros(self.num_envs, 4, device=self.device) for agent in self.cfg.possible_agents}
+
         # Delay for observation
-        self.lin_vel_obs_max_lag = 0 if self.cfg.lin_vel_obs_delay_ms <= 0.0 else int(math.ceil(self.cfg.lin_vel_obs_delay_ms * 1e-3 / self.step_dt))
-        logger.info(f"Max lin vel observation delay = {self.lin_vel_obs_max_lag} env steps")
-        self.lin_vel_delay = {
+        self.odom_max_lag = 0 if self.cfg.odom_delay_ms <= 0.0 else int(math.ceil(self.cfg.odom_delay_ms * 1e-3 / self.step_dt))
+        logger.info(f"Max odometry delay = {self.odom_max_lag} env steps")
+        self.odom_delay = {
             agent: DelayBuffer(
-                history_length=self.lin_vel_obs_max_lag,
+                history_length=self.odom_max_lag,
                 batch_size=self.num_envs,
                 device=self.device,
             )
@@ -330,12 +335,18 @@ class SwarmAccEnv(DirectMARLEnv):
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
         for agent in self.possible_agents:
+            # Action is defined as the linear acc in odom frame
+            a_desired_o = torch.zeros(self.num_envs, 3, device=self.device)
+
             # Denormalize and clip the input signal
             self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
             a_xy_desired = self.actions[agent] * self.cfg.a_max[agent]
             norm_xy = torch.linalg.norm(a_xy_desired, dim=1, keepdim=True)
             clip_scale = torch.clamp(norm_xy / self.cfg.a_max[agent], min=1.0)
-            self.a_desired[agent][:, :2] = a_xy_desired / clip_scale
+            a_desired_o[:, :2] = a_xy_desired / clip_scale
+
+            # Transform action to world frame
+            self.a_desired[agent] = quat_apply(self.odom_frame_quat_w[agent], a_desired_o)
 
     def _apply_action(self) -> None:
         prev_v_desired, a_after_v_clip = {}, {}
@@ -747,6 +758,16 @@ class SwarmAccEnv(DirectMARLEnv):
             init_state[env_ids, 2] = float(self.cfg.flight_altitude)
             init_state[env_ids, :3] += self.terrain.env_origins[env_ids]
 
+            self.yaw_desired[agent][env_ids, 0] = 2 * torch.pi * torch.rand(len(env_ids), dtype=torch.float, device=self.device)
+            rand_yaw_rot = quat_from_euler_xyz(
+                torch.zeros(len(env_ids), dtype=torch.float, device=self.device),
+                torch.zeros(len(env_ids), dtype=torch.float, device=self.device),
+                self.yaw_desired[agent][env_ids, 0],
+            )
+            init_state[env_ids, 3:7] = rand_yaw_rot
+            self.odom_frame_quat_w[agent][env_ids] = rand_yaw_rot
+            self.odom_frame_quat_w_inv[agent][env_ids] = quat_inv(rand_yaw_rot)
+
             self.robots[agent].write_root_pose_to_sim(init_state[env_ids, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(init_state[env_ids, 7:], env_ids)
             self.robots[agent].write_joint_state_to_sim(
@@ -787,20 +808,20 @@ class SwarmAccEnv(DirectMARLEnv):
                 self.thrust_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
                 self.m_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
 
-            self.lin_vel_delay[agent].reset(env_ids)
+            self.odom_delay[agent].reset(env_ids)
             self.rel_pos_delay[agent].reset(env_ids)
 
-            if self.lin_vel_obs_max_lag > 0:
+            if self.odom_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=math.floor(0.77 * self.lin_vel_obs_max_lag),  # Dončić ~~
-                    high=self.lin_vel_obs_max_lag + 1,
+                    low=math.floor(0.77 * self.odom_max_lag),  # Dončić ~~
+                    high=self.odom_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
                     device=self.device,
                 )
             else:
                 rand_lags = torch.zeros(len(env_ids), dtype=torch.int, device=self.device)
-            self.lin_vel_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
+            self.odom_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
 
             if self.rel_pos_max_lag > 0:
                 rand_lags = torch.randint(
@@ -977,10 +998,12 @@ class SwarmAccEnv(DirectMARLEnv):
         max_vis = self.cfg.max_visible_distance
         for i, agent_i in enumerate(self.possible_agents):
             body2goal_w = self.goals[agent_i] - self.robots[agent_i].data.root_pos_w
+            body2goal_o = quat_apply(self.odom_frame_quat_w_inv[agent_i], body2goal_w)
 
             # Add noise to linear velocity observation
-            lin_vel_w = self.robots[agent_i].data.root_lin_vel_w[:, :2]
-            lin_vel_w_noisy = lin_vel_w + torch.randn_like(lin_vel_w) * self.cfg.lin_vel_noise_std if self.cfg.enable_domain_randomization else lin_vel_w
+            lin_vel_w = self.robots[agent_i].data.root_lin_vel_w[:, :3]
+            lin_vel_w_noisy = lin_vel_w + torch.randn_like(lin_vel_w) * self.cfg.odom_lin_vel_noise_std if self.cfg.enable_domain_randomization else lin_vel_w
+            lin_vel_o_noisy = quat_apply(self.odom_frame_quat_w_inv[agent_i], lin_vel_w_noisy)
 
             ### ============= Generate noisy relative position observation and observability ============= ###
 
@@ -1057,14 +1080,22 @@ class SwarmAccEnv(DirectMARLEnv):
 
             rel_pos_b_noisy_with_observability = torch.cat([rel_pos_b_noisy, observability_mask.unsqueeze(-1)], dim=-1).reshape(B, N * 4)
 
-            delayed_lin_vel_w_noisy = self.lin_vel_delay[agent_i].compute(lin_vel_w_noisy)
+            # Impose delay on odometry and relative position observations
+            odom = torch.cat(
+                [
+                    body2goal_o[:, :2],
+                    lin_vel_o_noisy[:, :2],  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    quat_mul(self.odom_frame_quat_w_inv[agent_i], self.robots[agent_i].data.root_quat_w),  # root_quat_o
+                ],
+                dim=1,
+            )
+            delayed_odom = self.odom_delay[agent_i].compute(odom)
             delayed_rel_pos_b_noisy_with_observability = self.rel_pos_delay[agent_i].compute(rel_pos_b_noisy_with_observability)
 
             obs = torch.cat(
                 [
                     self.actions[agent_i].clone(),
-                    body2goal_w[:, :2],
-                    delayed_lin_vel_w_noisy,  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    delayed_odom,
                     delayed_rel_pos_b_noisy_with_observability,
                 ],
                 dim=1,
