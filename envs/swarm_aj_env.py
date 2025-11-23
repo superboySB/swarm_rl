@@ -39,7 +39,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 10.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 150.0
+    mutual_collision_penalty_weight = 100.0
     mutual_collision_avoidance_soft_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_acc_norm_penalty_weight = 1.0
@@ -110,8 +110,8 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 4 for agent in possible_agents}
     j_max = {agent: 50.0 for agent in possible_agents}
-    a_max = {agent: 10.0 for agent in possible_agents}
-    v_max = {agent: 3.0 for agent in possible_agents}
+    a_max = {agent: 20.0 for agent in possible_agents}
+    v_max = {agent: 6.0 for agent in possible_agents}
 
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
@@ -1067,7 +1067,7 @@ class SwarmAJEnv(DirectMARLEnv):
 
                     # Apply a gradually increasing noise to the distance as it grows
                     std_dist = self.cfg.min_dist_noise_std + dist_normalized * (self.cfg.max_dist_noise_std - self.cfg.min_dist_noise_std)
-                    dist_noisy = dist + torch.randn_like(dist) * std_dist
+                    dist_noisy = (dist + torch.randn_like(dist) * std_dist).clamp_min(1e-6)
 
                     # Similarly apply noise to the bearing in spherical coordinates
                     x, y, z = rel_pos[:, 0], rel_pos[:, 1], rel_pos[:, 2]
@@ -1259,30 +1259,30 @@ class SwarmAJEnv(DirectMARLEnv):
 
         # Publish states
         state = self.robots[agent].data.root_state_w[env_id]
-        p_odom = state[:3].cpu().numpy()
-        q_odom = state[3:7].cpu().numpy()
-        v_odom = state[7:10].cpu().numpy()
-        w_odom_w = state[10:13]
-        w_odom_b = quat_apply(quat_inv(self.robots[agent].data.root_quat_w[env_id]), w_odom_w)
-        w_odom = w_odom_b.cpu().numpy()
+        p = state[:3].cpu().numpy()
+        q = state[3:7].cpu().numpy()
+        v = state[7:10].cpu().numpy()
+        w_w = state[10:13]
+        w_b = quat_apply(quat_inv(self.robots[agent].data.root_quat_w[env_id]), w_w)
+        w = w_b.cpu().numpy()
 
         odom_msg = Odometry()
         odom_msg.header.stamp = t
         odom_msg.header.frame_id = "world"
         odom_msg.child_frame_id = "base_link"
-        odom_msg.pose.pose.position.x = float(p_odom[0])
-        odom_msg.pose.pose.position.y = float(p_odom[1])
-        odom_msg.pose.pose.position.z = float(p_odom[2])
-        odom_msg.pose.pose.orientation.w = float(q_odom[0])
-        odom_msg.pose.pose.orientation.x = float(q_odom[1])
-        odom_msg.pose.pose.orientation.y = float(q_odom[2])
-        odom_msg.pose.pose.orientation.z = float(q_odom[3])
-        odom_msg.twist.twist.linear.x = float(v_odom[0])
-        odom_msg.twist.twist.linear.y = float(v_odom[1])
-        odom_msg.twist.twist.linear.z = float(v_odom[2])
-        odom_msg.twist.twist.angular.x = float(w_odom[0])
-        odom_msg.twist.twist.angular.y = float(w_odom[1])
-        odom_msg.twist.twist.angular.z = float(w_odom[2])
+        odom_msg.pose.pose.position.x = float(p[0])
+        odom_msg.pose.pose.position.y = float(p[1])
+        odom_msg.pose.pose.position.z = float(p[2])
+        odom_msg.pose.pose.orientation.w = float(q[0])
+        odom_msg.pose.pose.orientation.x = float(q[1])
+        odom_msg.pose.pose.orientation.y = float(q[2])
+        odom_msg.pose.pose.orientation.z = float(q[3])
+        odom_msg.twist.twist.linear.x = float(v[0])
+        odom_msg.twist.twist.linear.y = float(v[1])
+        odom_msg.twist.twist.linear.z = float(v[2])
+        odom_msg.twist.twist.angular.x = float(w[0])
+        odom_msg.twist.twist.angular.y = float(w[1])
+        odom_msg.twist.twist.angular.z = float(w[2])
         self.odom_pub.publish(odom_msg)
 
         # Publish actions

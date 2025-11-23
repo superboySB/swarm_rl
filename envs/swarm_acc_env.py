@@ -1045,7 +1045,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
                     # Apply a gradually increasing noise to the distance as it grows
                     std_dist = self.cfg.min_dist_noise_std + dist_normalized * (self.cfg.max_dist_noise_std - self.cfg.min_dist_noise_std)
-                    dist_noisy = dist + torch.randn_like(dist) * std_dist
+                    dist_noisy = (dist + torch.randn_like(dist) * std_dist).clamp_min(1e-6)
 
                     # Similarly apply noise to the bearing in spherical coordinates
                     x, y, z = rel_pos[:, 0], rel_pos[:, 1], rel_pos[:, 2]
@@ -1237,30 +1237,30 @@ class SwarmAccEnv(DirectMARLEnv):
 
         # Publish states
         state = self.robots[agent].data.root_state_w[env_id]
-        p_odom = state[:3].cpu().numpy()
-        q_odom = state[3:7].cpu().numpy()
-        v_odom = state[7:10].cpu().numpy()
-        w_odom_w = state[10:13]
-        w_odom_b = quat_apply(quat_inv(self.robots[agent].data.root_quat_w[env_id]), w_odom_w)
-        w_odom = w_odom_b.cpu().numpy()
+        p = state[:3].cpu().numpy()
+        q = state[3:7].cpu().numpy()
+        v = state[7:10].cpu().numpy()
+        w_w = state[10:13]
+        w_b = quat_apply(quat_inv(self.robots[agent].data.root_quat_w[env_id]), w_w)
+        w = w_b.cpu().numpy()
 
         odom_msg = Odometry()
         odom_msg.header.stamp = t
         odom_msg.header.frame_id = "world"
         odom_msg.child_frame_id = "base_link"
-        odom_msg.pose.pose.position.x = float(p_odom[0])
-        odom_msg.pose.pose.position.y = float(p_odom[1])
-        odom_msg.pose.pose.position.z = float(p_odom[2])
-        odom_msg.pose.pose.orientation.w = float(q_odom[0])
-        odom_msg.pose.pose.orientation.x = float(q_odom[1])
-        odom_msg.pose.pose.orientation.y = float(q_odom[2])
-        odom_msg.pose.pose.orientation.z = float(q_odom[3])
-        odom_msg.twist.twist.linear.x = float(v_odom[0])
-        odom_msg.twist.twist.linear.y = float(v_odom[1])
-        odom_msg.twist.twist.linear.z = float(v_odom[2])
-        odom_msg.twist.twist.angular.x = float(w_odom[0])
-        odom_msg.twist.twist.angular.y = float(w_odom[1])
-        odom_msg.twist.twist.angular.z = float(w_odom[2])
+        odom_msg.pose.pose.position.x = float(p[0])
+        odom_msg.pose.pose.position.y = float(p[1])
+        odom_msg.pose.pose.position.z = float(p[2])
+        odom_msg.pose.pose.orientation.w = float(q[0])
+        odom_msg.pose.pose.orientation.x = float(q[1])
+        odom_msg.pose.pose.orientation.y = float(q[2])
+        odom_msg.pose.pose.orientation.z = float(q[3])
+        odom_msg.twist.twist.linear.x = float(v[0])
+        odom_msg.twist.twist.linear.y = float(v[1])
+        odom_msg.twist.twist.linear.z = float(v[2])
+        odom_msg.twist.twist.angular.x = float(w[0])
+        odom_msg.twist.twist.angular.y = float(w[1])
+        odom_msg.twist.twist.angular.z = float(w[2])
         self.odom_pub.publish(odom_msg)
 
         # Publish actions

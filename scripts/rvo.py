@@ -196,7 +196,7 @@ def rvo(state: torch.Tensor, env_cfg) -> Dict[str, torch.Tensor]:
                     r_std = min_dist_noise_std + (max_dist_noise_std - min_dist_noise_std) * alpha
                     theta_std = max_bearing_noise_std - (max_bearing_noise_std - min_bearing_noise_std) * alpha
 
-                    r_noisy = r + torch.randn((), device=state.device, dtype=state.dtype) * r_std
+                    r_noisy = (r + torch.randn((), device=state.device, dtype=state.dtype) * r_std).clamp_min(1e-6)
                     theta_noisy = theta + torch.randn((), device=state.device, dtype=state.dtype) * theta_std
 
                     rel_pos = torch.stack((r_noisy * torch.cos(theta_noisy), r_noisy * torch.sin(theta_noisy)), dim=0)

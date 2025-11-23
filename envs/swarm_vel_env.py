@@ -909,7 +909,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
                     # Apply a gradually increasing noise to the distance as it grows
                     std_dist = self.cfg.min_dist_noise_std + dist_normalized * (self.cfg.max_dist_noise_std - self.cfg.min_dist_noise_std)
-                    dist_noisy = dist + torch.randn_like(dist) * std_dist
+                    dist_noisy = (dist + torch.randn_like(dist) * std_dist).clamp_min(1e-6)
 
                     # Similarly apply noise to the bearing in spherical coordinates
                     x, y, z = rel_pos[:, 0], rel_pos[:, 1], rel_pos[:, 2]
