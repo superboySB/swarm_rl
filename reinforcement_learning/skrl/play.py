@@ -62,7 +62,8 @@ elif args_cli.task not in [
     "FAST-Quadcopter-Vel",
     "FAST-Quadcopter-Waypoint",
     "FAST-Swarm-Bodyrate",
-    "FAST-Swarm-Acc" "FAST-Swarm-AJ",
+    "FAST-Swarm-Acc",
+    "FAST-Swarm-AJ",
     "FAST-Swarm-Vel",
     "FAST-Swarm-Waypoint",
 ]:

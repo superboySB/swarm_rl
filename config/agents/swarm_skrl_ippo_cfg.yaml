@@ -57,11 +57,11 @@ agent:
 
   discount_factor: 0.99
   lambda: 0.95
-  learning_rate: 0.0005
+  learning_rate: 0.001
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
-    kl_threshold: 0.01
-    max_lr: 0.0005
+    kl_threshold: 0.02
+    max_lr: 0.001
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler
@@ -74,7 +74,7 @@ agent:
   clip_predicted_values: True
   entropy_loss_scale: 0.001
   value_loss_scale: 1.0
-  kl_threshold: 0.05
+  kl_threshold: 0.1
   rewards_shaper_scale: 1.0
   time_limit_bootstrap: False
   # logging and checkpoint

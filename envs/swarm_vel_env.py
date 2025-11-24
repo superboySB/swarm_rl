@@ -801,7 +801,6 @@ class SwarmVelEnv(DirectMARLEnv):
 
                         self.reset_goal_timer[agent_][mission_0_ids] = 0.0
 
-                        # FIXME: Whether ⬇️ should exist?
                         self.prev_dist_to_goals[agent_][mission_0_ids] = torch.linalg.norm(
                             self.goals[agent_][mission_0_ids] - self.robots[agent_].data.root_pos_w[mission_0_ids], dim=1
                         )
@@ -851,7 +850,6 @@ class SwarmVelEnv(DirectMARLEnv):
 
                 self.reset_goal_timer[agent][reset_goal_idx] = 0.0
 
-                # FIXME: Whether ⬇️ should exist?
                 self.prev_dist_to_goals[agent][reset_goal_idx] = torch.linalg.norm(
                     self.goals[agent][reset_goal_idx] - self.robots[agent].data.root_pos_w[reset_goal_idx], dim=1
                 )
