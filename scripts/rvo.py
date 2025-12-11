@@ -379,7 +379,6 @@ def main():
     env_cfg.fix_range = True
     env_cfg.flight_range += 100.0
     env_cfg.flight_range_margin += 100.0
-    env_cfg.episode_length_s /= 10.0
 
     # Enable RVO observation delay
     # (RVO observations are derived from state
