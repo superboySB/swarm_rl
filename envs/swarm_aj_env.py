@@ -113,8 +113,8 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     state_space = transient_state_dim
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 4 for agent in possible_agents}
-    j_max = {agent: 50.0 for agent in possible_agents}
-    a_max = {agent: 10.0 for agent in possible_agents}
+    j_max = {agent: 40.0 for agent in possible_agents}
+    a_max = {agent: 8.0 for agent in possible_agents}
     v_max = {agent: 3.0 for agent in possible_agents}
 
     def __post_init__(self):
@@ -202,9 +202,7 @@ class SwarmAJEnv(DirectMARLEnv):
         self.ang = torch.zeros(self.num_envs, self.cfg.num_drones, device=self.device)
         # Mission crossover_v1 params
         self.crossover_v1_xm = torch.zeros(self.num_envs, device=self.device)
-        self.crossover_v1_goal_on_origin_side = {
-            agent: torch.zeros(self.num_envs, dtype=torch.bool, device=self.device) for agent in self.cfg.possible_agents
-        }
+        self.crossover_v1_goal_on_origin_side = {agent: torch.zeros(self.num_envs, dtype=torch.bool, device=self.device) for agent in self.cfg.possible_agents}
         # Mission cluster_swap params
         self.cluster_swap_cluster_sizes = [math.ceil(self.cfg.num_drones / 2), self.cfg.num_drones - math.ceil(self.cfg.num_drones / 2)]
         self.cluster_swap_agent_indices = []
@@ -379,10 +377,23 @@ class SwarmAJEnv(DirectMARLEnv):
             self.a_desired[agent] = quat_apply(self.odom_frame_quat_w[agent], a_desired_o)
             self.j_desired[agent] = quat_apply(self.odom_frame_quat_w[agent], j_desired_o)
 
+            # Start desired velocity from current world velocity and cap to v_max
+            self.v_desired[agent][:, :2] = self.robots[agent].data.root_lin_vel_w[:, :2]
+            speed_xy = torch.linalg.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
+            clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
+            self.v_desired[agent][:, :2] /= clip_scale
+
     def _apply_action(self) -> None:
-        prev_v_desired, a_after_v_clip = {}, {}
+        prev_a_desired, prev_v_desired, a_after_v_clip = {}, {}, {}
         for agent in self.possible_agents:
-            # Clip velocity cmd
+            # Clip acc cmd
+            prev_a_desired[agent] = self.a_desired[agent].clone()
+            self.a_desired[agent][:, :2] += self.j_desired[agent][:, :2] * self.physics_dt
+            a_xy_norm = torch.linalg.norm(self.a_desired[agent][:, :2], dim=1, keepdim=True)
+            clip_scale = torch.clamp(a_xy_norm / self.cfg.a_max[agent], min=1.0)
+            self.a_desired[agent][:, :2] /= clip_scale
+
+            # Clip vel cmd
             prev_v_desired[agent] = self.v_desired[agent].clone()
             self.v_desired[agent][:, :2] += self.a_desired[agent][:, :2] * self.physics_dt
             speed_xy = torch.linalg.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
@@ -392,7 +403,7 @@ class SwarmAJEnv(DirectMARLEnv):
             # Update acceleration cmd after velocity clipping
             a_after_v_clip[agent] = (self.v_desired[agent] - prev_v_desired[agent]) / self.physics_dt
 
-            self.p_desired[agent][:, :2] += prev_v_desired[agent][:, :2] * self.physics_dt + 0.5 * a_after_v_clip[agent][:, :2] * self.physics_dt**2
+            self.p_desired[agent][:, :2] = self.robots[agent].data.root_pos_w[:, :2]
 
         ### ============= Realistic acceleration tracking ============= ###
 
@@ -904,9 +915,7 @@ class SwarmAJEnv(DirectMARLEnv):
 
             if torch.any(~done):
                 failed_ids = mission_4_ids[~done].tolist()
-                logger.warning(
-                    f"The search for cluster_swap initial positions meeting constraints failed for envs {failed_ids}, using the final sample #_#"
-                )
+                logger.warning(f"The search for cluster_swap initial positions meeting constraints failed for envs {failed_ids}, using the final sample #_#")
 
             rand_init_p_mis4[:, :, 1].clamp_(-rg, rg)
             self.cluster_swap_init_xy[mission_4_ids] = rand_init_p_mis4
@@ -1038,7 +1047,6 @@ class SwarmAJEnv(DirectMARLEnv):
 
             if self.odom_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=math.floor(0.77 * self.odom_max_lag),  # Dončić ~~
                     high=self.odom_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
@@ -1050,7 +1058,6 @@ class SwarmAJEnv(DirectMARLEnv):
 
             if self.rel_pos_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=math.floor(0.5 * self.rel_pos_max_lag),
                     high=self.rel_pos_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
@@ -1190,8 +1197,11 @@ class SwarmAJEnv(DirectMARLEnv):
             for i, agent in enumerate(self.possible_agents):
                 self.ang[mission_1_ids, i] = (self.ang[mission_1_ids, i] + math.pi) % (2 * math.pi)
                 self.goals[agent][mission_1_ids, :2] = torch.stack(
-                    [torch.cos(self.ang[mission_1_ids, i]), torch.sin(self.ang[mission_1_ids, i])], dim=1
-                ) * self.rand_r[mission_1_ids].unsqueeze(-1)
+                    [
+                        torch.cos(self.ang[mission_1_ids, i]),
+                        torch.sin(self.ang[mission_1_ids, i]),
+                    ],
+                    dim=1) * self.rand_r[mission_1_ids].unsqueeze(-1)
 
                 self.goals[agent][mission_1_ids, 2] = float(self.cfg.flight_altitude)
                 self.goals[agent][mission_1_ids] += self.terrain.env_origins[mission_1_ids]
@@ -1266,9 +1276,7 @@ class SwarmAJEnv(DirectMARLEnv):
 
             self.goals[agent][mission_3_ids, :2] = rand_goal_p_mis3[:, i]
             self.reset_goal_timer[agent][mission_3_ids] = 0.0
-            self.prev_dist_to_goals[agent][mission_3_ids] = torch.linalg.norm(
-                self.goals[agent][mission_3_ids] - self.robots[agent].data.root_pos_w[mission_3_ids], dim=1
-            )
+            self.prev_dist_to_goals[agent][mission_3_ids] = torch.linalg.norm(self.goals[agent][mission_3_ids] - self.robots[agent].data.root_pos_w[mission_3_ids], dim=1)
 
         mission_4_ids = mission_reset_ids[4]
         if mission_4_ids.numel() > 0:
