@@ -39,7 +39,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 20.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 130.0
+    mutual_collision_penalty_weight = 90.0
     mutual_collision_avoidance_soft_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_acc_norm_penalty_weight = 1.0
@@ -70,7 +70,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     realistic_ctrl = True
     # Params for mission migration
     use_custom_traj = True  # Whether to use custom trajectory for migration mission
-    num_custom_trajs = 128
+    num_custom_trajs = 200
     lissajous_cfg = LissajousConfig()
     # Params for mission crossover
     fix_range = False
@@ -88,10 +88,10 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     odom_lin_vel_noise_std = 0.1
     odom_rot_noise_std = 0.0
     min_dist_noise_std = 0.05
-    max_dist_noise_std = 0.5
-    min_bearing_noise_std = 0.005
-    max_bearing_noise_std = 0.05
-    drop_prob = 0.05
+    max_dist_noise_std = 1.0
+    min_bearing_noise_std = 0.05
+    max_bearing_noise_std = 0.1
+    drop_prob = 0.1
 
     # Parameters for environment and agents
     episode_length_s = 60.0
@@ -115,7 +115,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     action_spaces = {agent: 4 for agent in possible_agents}
     j_max = {agent: 50.0 for agent in possible_agents}
     a_max = {agent: 10.0 for agent in possible_agents}
-    v_max = {agent: 4.0 for agent in possible_agents}
+    v_max = {agent: 3.0 for agent in possible_agents}
 
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
@@ -1050,7 +1050,7 @@ class SwarmAJEnv(DirectMARLEnv):
 
             if self.rel_pos_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=math.floor(0.77 * self.rel_pos_max_lag),
+                    low=math.floor(0.5 * self.rel_pos_max_lag),
                     high=self.rel_pos_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,

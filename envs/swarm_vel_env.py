@@ -26,7 +26,7 @@ from utils.custom_trajs import generate_custom_trajs, LissajousConfig
 @configclass
 class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(3.0, -3.0, 10.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 15.0))
 
     # Reward weights
     to_live_reward_weight = 1.0  # 《活着》
@@ -75,8 +75,8 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     min_dist_noise_std = 0.05
     max_dist_noise_std = 1.0
     min_bearing_noise_std = 0.1
-    max_bearing_noise_std = 0.15
-    drop_prob = 0.05
+    max_bearing_noise_std = 0.25
+    drop_prob = 0.1
 
     # RVO observation delay
     enable_state_delay = False
@@ -86,8 +86,8 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # Parameters for environment and agents
     episode_length_s = 300.0
     physics_freq = 200
-    action_freq = 100
-    gui_render_freq = 100
+    action_freq = 50
+    gui_render_freq = 50
     num_drones = 13  # Number of drones per environment
     decimation = max(1, math.ceil(physics_freq / action_freq))  # Environment decimation
     render_decimation = max(1, physics_freq // gui_render_freq)

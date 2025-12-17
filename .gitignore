@@ -44,6 +44,7 @@ docker/artifacts/
 
 .env
 
+# Unignore milestones
 # 1) Ignore everything under outputs
 /outputs/**
 
