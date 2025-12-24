@@ -37,26 +37,20 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     # Reward weights
     to_live_reward_weight = 1.0  # 《活着》
     death_penalty_weight = 0.0
-    approaching_goal_reward_weight = 20.0
+    approaching_goal_reward_weight = 25.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 90.0
+    mutual_collision_penalty_weight = 160.0
     mutual_collision_avoidance_soft_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_acc_norm_penalty_weight = 1.0
-    action_jerk_norm_penalty_weight = 0.5
+    action_jerk_norm_penalty_weight = 1.0
     action_acc_diff_penalty_weight = 1.0
-    action_jerk_diff_penalty_weight = 0.5
+    action_jerk_diff_penalty_weight = 1.0
     action_norm_near_goal_penalty_weight = 10.0
     # Exponential decay factors and tolerances
     mutual_collision_avoidance_reward_scale = 1.0
 
     # Mission settings
-    flight_range = 3.5
-    flight_range_margin = 1.0
-    flight_altitude = 1.0  # Desired flight altitude
-    collide_dist = 0.5
-    soft_collision_penalty_dist = 1.0
-    goal_reset_time_range = (1.0, 2.0)  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "crossover_v1", "chaotic", "cluster_swap"]
     mission_prob = [0.0, 0.1, 0.4, 0.0, 0.5]
     # mission_prob = [1.0, 0.0, 0.0, 0.0, 0.0]
@@ -64,10 +58,14 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     # mission_prob = [0.0, 0.0, 1.0, 0.0, 0.0]
     # mission_prob = [0.0, 0.0, 0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 0.0, 0.0, 1.0]
+    flight_range = 4.0
+    flight_range_margin = 1.5
+    flight_altitude = 1.0  # Desired flight altitude
+    collide_dist = 0.5
+    soft_collision_penalty_dist = 1.0
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
+    goal_reset_time_range = (1.0, 2.0)  # Delay for resetting goal after reaching it
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
-    torque_ctrl_delay_ms = 0.0  # Angular velocity controller delay of PX4-Autopilot: 20 ~ 50ms
-    realistic_ctrl = True
     # Params for mission migration
     use_custom_traj = True  # Whether to use custom trajectory for migration mission
     num_custom_trajs = 200
@@ -78,8 +76,11 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     # Params for mission crossover_v1
     crossover_v1_y_span = 1.3
 
+    realistic_ctrl = True
+    torque_ctrl_delay_ms = 0.0  # Angular velocity controller delay of PX4-Autopilot: 10 ~ 20ms
+
     # Observation parameters
-    odom_delay_ms = 20.0  # VIO delay: 5ms with imu propogation
+    odom_delay_ms = 20.0  # VIO delay: 5 ~ 20ms with imu propogation
     rel_pos_obs_delay_ms = 200.0  # Seeker Omni-4P streaming delay: 160ms + YOLO delay: 40ms
     max_visible_distance = 5.0
     max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
@@ -94,15 +95,17 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     drop_prob = 0.1
 
     # Parameters for environment and agents
+    num_drones = 5
     episode_length_s = 60.0
     physics_freq = 200
     control_freq = 50
+    control_decimation = max(1, math.floor(physics_freq / control_freq))
     action_freq = 20
+    decimation = max(1, math.floor(physics_freq / action_freq))
+    detection_freq = 10
+    detection_decimation = max(1, math.ceil(action_freq / detection_freq))
     gui_render_freq = 50
-    control_decimation = max(1, physics_freq // control_freq)
-    num_drones = 5  # Number of drones per environment
-    decimation = max(1, math.ceil(physics_freq / action_freq))  # Environment decimation
-    render_decimation = max(1, physics_freq // gui_render_freq)
+    render_decimation = max(1, math.floor(physics_freq / gui_render_freq))
     clip_action = 1.0
     history_length = 3
     self_observation_dim = 12
@@ -113,9 +116,9 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     state_space = transient_state_dim
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     action_spaces = {agent: 4 for agent in possible_agents}
-    j_max = {agent: 40.0 for agent in possible_agents}
-    a_max = {agent: 8.0 for agent in possible_agents}
-    v_max = {agent: 3.0 for agent in possible_agents}
+    j_max = {agent: 30.0 for agent in possible_agents}
+    a_max = {agent: 10.0 for agent in possible_agents}
+    v_max = {agent: 5.0 for agent in possible_agents}
 
     def __post_init__(self):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
@@ -167,6 +170,7 @@ class SwarmAJEnv(DirectMARLEnv):
         super().__init__(cfg, render_mode, **kwargs)
         logger.info(f"Action decimation = {self.cfg.decimation}")
         logger.info(f"Controller decimation = {self.cfg.control_decimation}")
+        logger.info(f"Relative observation update decimation = {self.cfg.detection_decimation}")
 
         self.goals = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.prev_dist_to_goals = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.cfg.possible_agents}
@@ -273,7 +277,7 @@ class SwarmAJEnv(DirectMARLEnv):
         }
         self.rel_pos_w_noisy_with_observability = {}  # For visualization only
 
-        # Infomation about odom frames
+        # Information about odom frames
         self.odom_frame_quat_w = {agent: torch.zeros(self.num_envs, 4, device=self.device) for agent in self.cfg.possible_agents}
         self.odom_frame_quat_w_inv = {agent: torch.zeros(self.num_envs, 4, device=self.device) for agent in self.cfg.possible_agents}
         self.odom_frame_origin_w = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
@@ -298,6 +302,11 @@ class SwarmAJEnv(DirectMARLEnv):
                 device=self.device,
             )
             for agent in self.cfg.possible_agents
+        }
+        # Frequency limitation for relative position observations
+        self.rel_obs_update_counter = 0
+        self.throttled_delayed_rel_pos_b_noisy_with_observability = {
+            agent: torch.zeros(self.num_envs, self.cfg.relative_observation_dim * (self.cfg.num_drones - 1), device=self.device) for agent in self.cfg.possible_agents
         }
 
         # Sliding window for observation
@@ -384,14 +393,13 @@ class SwarmAJEnv(DirectMARLEnv):
             self.v_desired[agent][:, :2] /= clip_scale
 
     def _apply_action(self) -> None:
-        prev_a_desired, prev_v_desired, a_after_v_clip = {}, {}, {}
+        prev_v_desired, a_after_v_clip = {}, {}
         for agent in self.possible_agents:
             # Clip acc cmd
-            prev_a_desired[agent] = self.a_desired[agent].clone()
-            self.a_desired[agent][:, :2] += self.j_desired[agent][:, :2] * self.physics_dt
-            a_xy_norm = torch.linalg.norm(self.a_desired[agent][:, :2], dim=1, keepdim=True)
-            clip_scale = torch.clamp(a_xy_norm / self.cfg.a_max[agent], min=1.0)
-            self.a_desired[agent][:, :2] /= clip_scale
+            # self.a_desired[agent][:, :2] += self.j_desired[agent][:, :2] * self.physics_dt
+            # a_xy_norm = torch.linalg.norm(self.a_desired[agent][:, :2], dim=1, keepdim=True)
+            # clip_scale = torch.clamp(a_xy_norm / self.cfg.a_max[agent], min=1.0)
+            # self.a_desired[agent][:, :2] /= clip_scale
 
             # Clip vel cmd
             prev_v_desired[agent] = self.v_desired[agent].clone()
@@ -1031,7 +1039,6 @@ class SwarmAJEnv(DirectMARLEnv):
 
                 if self.torque_delay_max_lag > 0:
                     rand_lags = torch.randint(
-                        low=math.floor(0.4 * self.torque_delay_max_lag),
                         high=self.torque_delay_max_lag + 1,
                         size=(len(env_ids),),
                         dtype=torch.int,
@@ -1066,6 +1073,8 @@ class SwarmAJEnv(DirectMARLEnv):
             else:
                 rand_lags = torch.zeros(len(env_ids), dtype=torch.int, device=self.device)
             self.rel_pos_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
+            self.throttled_delayed_rel_pos_b_noisy_with_observability[agent][env_ids] = 0.0
+            self.throttled_delayed_rel_pos_b_noisy_with_observability[agent][env_ids, 3::self.cfg.relative_observation_dim] = -1.0
 
             self.observation_windows[agent].reset(env_ids)
 
@@ -1399,7 +1408,6 @@ class SwarmAJEnv(DirectMARLEnv):
 
             rel_pos_b_noisy_with_observability = torch.cat([rel_pos_b_noisy, observability_mask.unsqueeze(-1)], dim=-1).reshape(B, N * 4)
 
-            # Impose delay on odometry and relative position observations
             odom = torch.cat(
                 [
                     body2goal_o[:, :2],
@@ -1408,14 +1416,26 @@ class SwarmAJEnv(DirectMARLEnv):
                 ],
                 dim=1,
             )
+
+            # Impose delay on odometry and relative position observations
             delayed_odom = self.odom_delay[agent_i].compute(odom)
             delayed_rel_pos_b_noisy_with_observability = self.rel_pos_delay[agent_i].compute(rel_pos_b_noisy_with_observability)
 
+            # Frequency limitation for relative position observations
+            if self.rel_obs_update_counter % self.cfg.detection_decimation == 0:
+                self.throttled_delayed_rel_pos_b_noisy_with_observability[agent_i] = delayed_rel_pos_b_noisy_with_observability
+            else:
+                uninit_mask = torch.any(
+                    self.throttled_delayed_rel_pos_b_noisy_with_observability[agent_i][:, 3::self.cfg.relative_observation_dim] < 0.0, dim=1
+                )
+                if uninit_mask.any():
+                    self.throttled_delayed_rel_pos_b_noisy_with_observability[agent_i][uninit_mask] = delayed_rel_pos_b_noisy_with_observability[uninit_mask]
+
             obs = torch.cat(
                 [
-                    self.actions[agent_i].clone(),
+                    self.actions[agent_i],
                     delayed_odom,
-                    delayed_rel_pos_b_noisy_with_observability,
+                    self.throttled_delayed_rel_pos_b_noisy_with_observability[agent_i],
                 ],
                 dim=1,
             )
@@ -1432,6 +1452,7 @@ class SwarmAJEnv(DirectMARLEnv):
 
                 self.rel_pos_w_noisy_with_observability[agent_i] = torch.cat([rel_pos_w_noisy, observability_mask.unsqueeze(-1)], dim=-1).reshape(B, N * 4)
 
+        self.rel_obs_update_counter += 1
         end = time.perf_counter()
         logger.debug(f"Generating observations takes {end - start:.5f}s")
 
@@ -1442,11 +1463,11 @@ class SwarmAJEnv(DirectMARLEnv):
         for agent in self.possible_agents:
             curr_state.extend(
                 [
-                    self.actions[agent].clone(),
+                    self.actions[agent],
                     self.robots[agent].data.root_pos_w - self.terrain.env_origins,
                     self.goals[agent] - self.robots[agent].data.root_pos_w,
-                    self.robots[agent].data.root_quat_w.clone(),
-                    self.robots[agent].data.root_vel_w.clone(),
+                    self.robots[agent].data.root_quat_w,
+                    self.robots[agent].data.root_vel_w,
                 ]
             )
         curr_state = torch.cat(curr_state, dim=1)
