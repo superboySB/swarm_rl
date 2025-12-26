@@ -92,7 +92,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     max_dist_noise_std = 1.0
     min_bearing_noise_std = 0.05
     max_bearing_noise_std = 0.1
-    drop_prob = 0.1
+    drop_prob = 0.05
 
     # Parameters for environment and agents
     num_drones = 5
@@ -107,7 +107,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     gui_render_freq = 50
     render_decimation = max(1, math.floor(physics_freq / gui_render_freq))
     clip_action = 1.0
-    history_length = 3
+    history_length = 5
     self_observation_dim = 12
     relative_observation_dim = 4
     transient_observasion_dim = self_observation_dim + relative_observation_dim * (num_drones - 1)
