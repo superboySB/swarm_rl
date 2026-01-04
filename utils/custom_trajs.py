@@ -26,7 +26,7 @@ class LissajousConfig:
     delta_range = [0, 2 * torch.pi]
 
     num_pieces = 128  # Number of pieces (segments) in the trajectory
-    max_exec_speed = 3.0  # Desired max execution speed (m/s)
+    max_exec_speed = 6.0  # Desired max execution speed (m/s)
 
 
 def generate_custom_trajs(type_id="lissajous", p_odom=None, v_odom=None, a_odom=None, p_init=None, custom_cfg=None, is_plotting=False):
