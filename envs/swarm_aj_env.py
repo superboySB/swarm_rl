@@ -39,7 +39,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 25.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 150.0
+    mutual_collision_penalty_weight = 160.0
     mutual_collision_avoidance_soft_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_acc_norm_penalty_weight = 1.0
@@ -59,10 +59,10 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     # mission_prob = [0.0, 0.0, 0.0, 1.0, 0.0]
     # mission_prob = [0.0, 0.0, 0.0, 0.0, 1.0]
     flight_range = 5.0
-    flight_range_margin = 1.0
+    flight_range_margin = 1.5
     fix_range = False
     flight_altitude = 1.0  # Desired flight altitude
-    collide_dist = 0.6
+    collide_dist = 0.5
     soft_collision_penalty_dist = 1.0
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     goal_reset_time_range = (1.0, 2.0)  # Delay for resetting goal after reaching it
@@ -74,7 +74,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     # Params for mission crossover
     uniformly_distributed_prob = 0.1
     # Params for mission crossover_v1
-    crossover_v1_y_span = 1.3
+    crossover_v1_y_span = 0.5
 
     torque_ctrl_delay_ms = 0.0  # Angular velocity controller delay of PX4-Autopilot: 10 ~ 20ms
     # Observation parameters
@@ -203,7 +203,7 @@ class SwarmAJEnv(DirectMARLEnv):
             self.custom_traj_exec_timesteps = torch.zeros(self.num_envs, device=self.device)
 
         # Mission crossover params
-        self.rand_r = torch.zeros(self.num_envs, device=self.device)
+        self.rand_rg = torch.zeros(self.num_envs, device=self.device)
         self.ang = torch.zeros(self.num_envs, self.cfg.num_drones, device=self.device)
         # Mission crossover_v1 params
         self.crossover_v1_goal_on_origin_side = {agent: torch.zeros(self.num_envs, dtype=torch.bool, device=self.device) for agent in self.cfg.possible_agents}
@@ -716,13 +716,13 @@ class SwarmAJEnv(DirectMARLEnv):
 
         # The crossover mission: init states on a circle + target on the opposite side
         if len(mission_1_ids) > 0:
-            r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0] - self.cfg.flight_range_margin
-            r_min = (self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0]) / 2
+            rg_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0] - self.cfg.flight_range_margin
+            rg_min = (self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0]) / 2
             if self.cfg.fix_range:
-                r_max = r_min
+                rg_max = rg_min
 
             # Uniformly sample ring radius per env, then angles per agent
-            rand_r = torch.rand(len(mission_1_ids), device=self.device) * (r_max - r_min) + r_min
+            rand_rg = torch.rand(len(mission_1_ids), device=self.device) * (rg_max - rg_min) + rg_min
             ang = torch.empty((len(mission_1_ids), self.cfg.num_drones), device=self.device)
 
             if torch.rand((), device=self.device) < self.cfg.uniformly_distributed_prob:
@@ -745,7 +745,7 @@ class SwarmAJEnv(DirectMARLEnv):
                     # Fully random angles on [0, 2pi)
                     ang_ = torch.rand((active_ids.numel(), self.cfg.num_drones), device=self.device) * 2 * math.pi
                     ang[active_ids] = ang_
-                    r = rand_r[active_ids].unsqueeze(-1)
+                    r = rand_rg[active_ids].unsqueeze(-1)
 
                     pts = torch.stack([torch.cos(ang_) * r, torch.sin(ang_) * r], dim=-1)  # [num_active, num_drones, 2]
                     # Reject angle sets that lead to collisions on the circle
@@ -764,28 +764,22 @@ class SwarmAJEnv(DirectMARLEnv):
                         f"The search for initial positions of the swarm meeting constraints on a circle failed for envs {failed_ids}, using the final sample #_#"
                     )
 
-            self.rand_r[mission_1_ids] = rand_r
+            self.rand_rg[mission_1_ids] = rand_rg
             self.ang[mission_1_ids] = ang
 
         # The crossover_v1 mission: inscribed rectangle, alternating goals
         rand_init_p_mis2 = None
         rand_goal_odom_mis2 = None
         if len(mission_2_ids) > 0:
-            r_max = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - self.cfg.flight_range_margin
-            r_min = (self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0]) / 2
+            rg_max = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - self.cfg.flight_range_margin
+            rg_min = (self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0]) / 2
             if self.cfg.fix_range:
-                r_max = r_min
-            rg = torch.rand(len(mission_2_ids), device=self.device) * (r_max - r_min) + r_min
-            ym = torch.full_like(rg, float(self.cfg.crossover_v1_y_span))
-            over_mask = ym >= rg / 1.414
-            if over_mask.any():
-                ym_clamped = torch.clamp(rg / 1.414, min=1e-3)
-                ym = torch.where(over_mask, ym_clamped, ym)
-                logger.warning(
-                    f"crossover_v1 y span {self.cfg.crossover_v1_y_span:.3f} exceeds rg for {over_mask.sum().item()} envs, clamped #^#"
-                )
-            xm = 2.0 * torch.sqrt(torch.clamp(rg * rg - ym * ym, min=0.0))
-            r0 = xm / 2.0
+                rg_max = rg_min
+
+            rand_rg = torch.rand(len(mission_2_ids), device=self.device) * (rg_max - rg_min) + rg_min
+            y_span_odom = torch.full_like(rand_rg, float(self.cfg.crossover_v1_y_span))
+            x_max_odom = 2.0 * torch.sqrt(torch.clamp(rand_rg * rand_rg - y_span_odom * y_span_odom, min=0.0))
+            half_x_max = x_max_odom / 2.0
 
             ang = torch.empty((len(mission_2_ids), self.cfg.num_drones), device=self.device)
             done = torch.zeros(len(mission_2_ids), dtype=torch.bool, device=self.device)
@@ -798,8 +792,8 @@ class SwarmAJEnv(DirectMARLEnv):
                 # Random phase on circle used as start positions
                 ang_ = torch.rand((active_ids.numel(), self.cfg.num_drones), device=self.device) * 2 * math.pi
                 ang[active_ids] = ang_
-                r0_active = r0[active_ids].unsqueeze(-1)
-                pts = torch.stack([torch.cos(ang_) * r0_active, torch.sin(ang_) * r0_active], dim=-1)  # [num_active, num_drones, 2]
+                r = half_x_max[active_ids].unsqueeze(-1)
+                pts = torch.stack([torch.cos(ang_) * r, torch.sin(ang_) * r], dim=-1)  # [num_active, num_drones, 2]
                 # Keep only point sets on the inscribed circle that satisfy spacing
                 dmat = torch.cdist(pts, pts)
                 eye = torch.eye(self.cfg.num_drones, dtype=torch.bool, device=self.device).expand(active_ids.numel(), -1, -1)
@@ -816,11 +810,12 @@ class SwarmAJEnv(DirectMARLEnv):
                     f"The search for initial positions of crossover_v1 meeting constraints on a circle failed for envs {failed_ids}, using the final sample #_#"
                 )
 
-            rand_init_p_mis2 = torch.stack([torch.cos(ang) * r0.unsqueeze(-1), torch.sin(ang) * r0.unsqueeze(-1)], dim=-1)
+            self.rand_rg[mission_2_ids] = rand_rg
+            rand_init_p_mis2 = torch.stack([torch.cos(ang) * half_x_max.unsqueeze(-1), torch.sin(ang) * half_x_max.unsqueeze(-1)], dim=-1)
             # Rectangular goal offsets in odom frame: fixed x offset, uniform y span
-            rand_goal_odom_mis2 = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 3, device=self.device)
-            rand_goal_odom_mis2[..., 0] = xm.unsqueeze(-1)
-            rand_goal_odom_mis2[..., 1] = (torch.rand(len(mission_2_ids), self.cfg.num_drones, device=self.device) * 2 - 1) * ym.unsqueeze(-1)
+            rand_goal_odom_mis2 = torch.zeros(len(mission_2_ids), self.cfg.num_drones, 2, device=self.device)
+            rand_goal_odom_mis2[..., 0] = x_max_odom.unsqueeze(-1)
+            rand_goal_odom_mis2[..., 1] = (torch.rand(len(mission_2_ids), self.cfg.num_drones, device=self.device) * 2 - 1) * y_span_odom.unsqueeze(-1)
 
         # The chaotic mission: random init states + respective random target
         rand_init_p_mis3 = None
@@ -888,14 +883,15 @@ class SwarmAJEnv(DirectMARLEnv):
         rand_init_p_mis4 = None
         rand_goal_p_mis4 = None
         if len(mission_4_ids) > 0:
-            r_max = self.cfg.flight_range - self.success_dist_thr[mission_4_ids][0] - self.cfg.flight_range_margin
-            r_min = (self.cfg.flight_range - self.success_dist_thr[mission_4_ids][0]) / 2
+            rg_max = self.cfg.flight_range - self.success_dist_thr[mission_4_ids][0] - self.cfg.flight_range_margin
+            rg_min = (self.cfg.flight_range - self.success_dist_thr[mission_4_ids][0]) / 2
             if self.cfg.fix_range:
-                r_max = r_min
-            rg = torch.rand(len(mission_4_ids), device=self.device) * (r_max - r_min) + r_min
-            x_span = (2 * rg) * 0.2
-            pos_x_low, pos_x_high = rg - x_span, rg
-            neg_x_low, neg_x_high = -rg, -rg + x_span
+                rg_max = rg_min
+
+            rand_rg = torch.rand(len(mission_4_ids), device=self.device) * (rg_max - rg_min) + rg_min
+            x_span = (2 * rand_rg) * 0.2
+            pos_x_low, pos_x_high = rand_rg - x_span, rand_rg
+            neg_x_low, neg_x_high = -rand_rg, -rand_rg + x_span
 
             rand_init_p_mis4 = torch.zeros(len(mission_4_ids), self.cfg.num_drones, 2, device=self.device)
 
@@ -912,8 +908,8 @@ class SwarmAJEnv(DirectMARLEnv):
                         steps=size,
                         device=self.device,
                     )
-                    y_centers.append(rg.unsqueeze(-1) * factor.unsqueeze(0))
-                y_stds.append(rg / (2.0 * size))
+                    y_centers.append(rand_rg.unsqueeze(-1) * factor.unsqueeze(0))
+                y_stds.append(rand_rg / (2.0 * size))
 
             done = torch.zeros(len(mission_4_ids), dtype=torch.bool, device=self.device)
             for attempt in range(5 * self.cfg.max_sampling_tries):
@@ -928,9 +924,7 @@ class SwarmAJEnv(DirectMARLEnv):
                     idx = self.cluster_swap_agent_indices[0]
                     pos_low = pos_x_low[active_ids].unsqueeze(-1)
                     pos_high = pos_x_high[active_ids].unsqueeze(-1)
-                    rand_init_p_mis4[active_ids[:, None], idx[None, :], 0] = (
-                        torch.rand(len(active_ids), len(idx), device=self.device) * (pos_high - pos_low) + pos_low
-                    )
+                    rand_init_p_mis4[active_ids[:, None], idx[None, :], 0] = torch.rand(len(active_ids), len(idx), device=self.device) * (pos_high - pos_low) + pos_low
                     y_mean = y_centers[0][active_ids]
                     # Gaussian y within cluster to keep a banded structure
                     rand_init_p_mis4[active_ids[:, None], idx[None, :], 1] = y_mean + torch.randn_like(y_mean) * y_stds[0][active_ids].unsqueeze(-1)
@@ -940,9 +934,7 @@ class SwarmAJEnv(DirectMARLEnv):
                     idx = self.cluster_swap_agent_indices[1]
                     neg_low = neg_x_low[active_ids].unsqueeze(-1)
                     neg_high = neg_x_high[active_ids].unsqueeze(-1)
-                    rand_init_p_mis4[active_ids[:, None], idx[None, :], 0] = (
-                        torch.rand(len(active_ids), len(idx), device=self.device) * (neg_high - neg_low) + neg_low
-                    )
+                    rand_init_p_mis4[active_ids[:, None], idx[None, :], 0] = torch.rand(len(active_ids), len(idx), device=self.device) * (neg_high - neg_low) + neg_low
                     y_mean = y_centers[1][active_ids]
                     rand_init_p_mis4[active_ids[:, None], idx[None, :], 1] = y_mean + torch.randn_like(y_mean) * y_stds[1][active_ids].unsqueeze(-1)
 
@@ -966,7 +958,7 @@ class SwarmAJEnv(DirectMARLEnv):
                 failed_ids = mission_4_ids[~done].tolist()
                 logger.warning(f"The search for cluster_swap initial positions meeting constraints failed for envs {failed_ids}, using the final sample #_#")
 
-            rand_init_p_mis4[:, :, 1] = rand_init_p_mis4[:, :, 1].clamp(-rg.unsqueeze(-1), rg.unsqueeze(-1))
+            rand_init_p_mis4[:, :, 1] = rand_init_p_mis4[:, :, 1].clamp(-rand_rg.unsqueeze(-1), rand_rg.unsqueeze(-1))
             self.cluster_swap_init_xy[mission_4_ids] = rand_init_p_mis4
             self.cluster_swap_is_reflected[mission_4_ids] = True
 
@@ -996,22 +988,21 @@ class SwarmAJEnv(DirectMARLEnv):
 
             if len(mission_1_ids) > 0:
                 ang = self.ang[mission_1_ids, i]
-                r = self.rand_r[mission_1_ids].unsqueeze(-1)
+                r = self.rand_rg[mission_1_ids].unsqueeze(-1)
 
                 init_state[mission_1_ids, :2] = torch.stack([torch.cos(ang), torch.sin(ang)], dim=1) * r
 
                 ang += math.pi  # Rotate each agent toward opposite side for its goal
                 self.goals[agent][mission_1_ids, :2] = torch.stack([torch.cos(ang), torch.sin(ang)], dim=1) * r
 
-            if len(mission_2_ids) > 0 and rand_init_p_mis2 is not None:
+            if len(mission_2_ids) > 0:
                 init_state[mission_2_ids, :2] = rand_init_p_mis2[:, i]
-                mission_2_pos_rel = rand_init_p_mis2[:, i].clone()
 
-            if len(mission_3_ids) > 0 and rand_init_p_mis3 is not None:
+            if len(mission_3_ids) > 0:
                 init_state[mission_3_ids, :2] = rand_init_p_mis3[:, i]
                 self.goals[agent][mission_3_ids, :2] = rand_goal_p_mis3[:, i]
 
-            if len(mission_4_ids) > 0 and rand_init_p_mis4 is not None:
+            if len(mission_4_ids) > 0:
                 init_state[mission_4_ids, :2] = rand_init_p_mis4[:, i]
                 self.goals[agent][mission_4_ids, :2] = rand_goal_p_mis4[:, i]
 
@@ -1027,10 +1018,12 @@ class SwarmAJEnv(DirectMARLEnv):
             init_state[env_ids, 3:7] = rand_yaw_rot
             self.odom_frame_quat_w[agent][env_ids] = rand_yaw_rot
             self.odom_frame_quat_w_inv[agent][env_ids] = quat_inv(rand_yaw_rot)
+            self.odom_frame_origin_w[agent][env_ids] = init_state[env_ids, :3]
 
-            if len(mission_2_ids) > 0 and mission_2_pos_rel is not None and rand_goal_odom_mis2 is not None:
+            # Transform goal in odom frame to world frame for mission crossover_v1
+            if len(mission_2_ids) > 0:
                 # Align body/odom frame toward origin
-                yaw_to_origin = torch.atan2(-mission_2_pos_rel[:, 1], -mission_2_pos_rel[:, 0])
+                yaw_to_origin = torch.atan2(-rand_init_p_mis2[:, i, 1], -rand_init_p_mis2[:, i, 0])
                 yaw_rot = quat_from_euler_xyz(
                     torch.zeros(len(mission_2_ids), dtype=torch.float, device=self.device),
                     torch.zeros(len(mission_2_ids), dtype=torch.float, device=self.device),
@@ -1041,15 +1034,12 @@ class SwarmAJEnv(DirectMARLEnv):
                 self.odom_frame_quat_w[agent][mission_2_ids] = yaw_rot
                 self.odom_frame_quat_w_inv[agent][mission_2_ids] = quat_inv(yaw_rot)
 
-                pos_rel_3d = torch.zeros(len(mission_2_ids), 3, device=self.device)
-                pos_rel_3d[:, :2] = mission_2_pos_rel
+                goal_odom = torch.cat([rand_goal_odom_mis2[:, i], torch.zeros_like(rand_goal_odom_mis2[:, i, :1])], dim=1)
                 # Compute alternating goals relative to the agent-centric odom frame
-                goal_offset = quat_apply(yaw_rot, rand_goal_odom_mis2[:, i])
-                goal_rel = pos_rel_3d + goal_offset
-                self.goals[agent][mission_2_ids, :2] = goal_rel[:, :2]
+                goal_offset = quat_apply(yaw_rot, goal_odom)
+                goal_w = rand_init_p_mis2[:, i] + goal_offset[:, :2]
+                self.goals[agent][mission_2_ids, :2] = goal_w
                 self.crossover_v1_goal_on_origin_side[agent][mission_2_ids] = True
-
-            self.odom_frame_origin_w[agent][env_ids] = init_state[env_ids, :3]
 
             self.robots[agent].write_root_pose_to_sim(init_state[env_ids, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(init_state[env_ids, 7:], env_ids)
@@ -1116,7 +1106,7 @@ class SwarmAJEnv(DirectMARLEnv):
                 rand_lags = torch.zeros(len(env_ids), dtype=torch.int, device=self.device)
             self.rel_pos_delay[agent].set_time_lag(rand_lags, batch_ids=env_ids)
             self.throttled_delayed_rel_pos_b_noisy_with_observability[agent][env_ids] = 0.0
-            self.throttled_delayed_rel_pos_b_noisy_with_observability[agent][env_ids, 3::self.cfg.relative_observation_dim] = -1.0
+            self.throttled_delayed_rel_pos_b_noisy_with_observability[agent][env_ids, 3 :: self.cfg.relative_observation_dim] = -1.0
 
             self.observation_windows[agent].reset(env_ids)
 
@@ -1251,7 +1241,7 @@ class SwarmAJEnv(DirectMARLEnv):
                         torch.cos(self.ang[mission_1_ids, i]),
                         torch.sin(self.ang[mission_1_ids, i]),
                     ],
-                    dim=1) * self.rand_r[mission_1_ids].unsqueeze(-1)
+                    dim=1) * self.rand_rg[mission_1_ids].unsqueeze(-1)
 
                 self.goals[agent][mission_1_ids, 2] = float(self.cfg.flight_altitude)
                 self.goals[agent][mission_1_ids] += self.terrain.env_origins[mission_1_ids]
@@ -1263,27 +1253,16 @@ class SwarmAJEnv(DirectMARLEnv):
 
         mission_2_ids = mission_reset_ids[2]
         if mission_2_ids.numel() > 0:
-            r_max = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - self.cfg.flight_range_margin
-            r_min = (self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0]) / 2
-            if self.cfg.fix_range:
-                r_max = r_min
-            rg = torch.rand(len(mission_2_ids), device=self.device) * (r_max - r_min) + r_min
-            ym = torch.full_like(rg, float(self.cfg.crossover_v1_y_span))
-            over_mask = ym >= rg / 1.414
-            if over_mask.any():
-                ym_clamped = torch.clamp(rg / 1.414, min=1e-3)
-                ym = torch.where(over_mask, ym_clamped, ym)
-                logger.warning(
-                    f"crossover_v1 y span {self.cfg.crossover_v1_y_span:.3f} exceeds rg for {over_mask.sum().item()} envs, clamped #^#"
-                )
-            xm = 2.0 * torch.sqrt(torch.clamp(rg * rg - ym * ym, min=0.0)).clamp_min(1e-6)
+            rand_rg = self.rand_rg[mission_2_ids]
+            y_span_odom = torch.full_like(rand_rg, float(self.cfg.crossover_v1_y_span))
+            x_max_odom = 2.0 * torch.sqrt(torch.clamp(rand_rg * rand_rg - y_span_odom * y_span_odom, min=0.0)).clamp_min(1e-6)
             for i, agent in enumerate(self.possible_agents):
                 odom_quat = self.odom_frame_quat_w[agent][mission_2_ids]
                 odom_origin = self.odom_frame_origin_w[agent][mission_2_ids]
 
                 next_on_origin_side = self.crossover_v1_goal_on_origin_side[agent][mission_2_ids]
-                x_targets = torch.where(next_on_origin_side, torch.zeros_like(xm), xm)
-                y_targets = (torch.rand(len(mission_2_ids), device=self.device) * 2 - 1) * ym
+                x_targets = torch.where(next_on_origin_side, torch.zeros_like(x_max_odom), x_max_odom)
+                y_targets = (torch.rand(len(mission_2_ids), device=self.device) * 2 - 1) * y_span_odom
                 # Sample goals in agent-aligned odom frame, then rotate/translate back to world
                 goal_odom = torch.stack([x_targets, y_targets, torch.zeros_like(x_targets)], dim=1)
                 goal_offset = quat_apply(odom_quat, goal_odom)
@@ -1485,9 +1464,7 @@ class SwarmAJEnv(DirectMARLEnv):
             if self.rel_obs_update_counter % self.cfg.detection_decimation == 0:
                 self.throttled_delayed_rel_pos_b_noisy_with_observability[agent_i] = delayed_rel_pos_b_noisy_with_observability
             else:
-                uninit_mask = torch.any(
-                    self.throttled_delayed_rel_pos_b_noisy_with_observability[agent_i][:, 3::self.cfg.relative_observation_dim] < 0.0, dim=1
-                )
+                uninit_mask = torch.any(self.throttled_delayed_rel_pos_b_noisy_with_observability[agent_i][:, 3 :: self.cfg.relative_observation_dim] < 0.0, dim=1)
                 if uninit_mask.any():
                     self.throttled_delayed_rel_pos_b_noisy_with_observability[agent_i][uninit_mask] = delayed_rel_pos_b_noisy_with_observability[uninit_mask]
 
