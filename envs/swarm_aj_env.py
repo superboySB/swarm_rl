@@ -76,7 +76,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     # Params for mission crossover_v1
     crossover_v1_y_span = 0.5
 
-    torque_ctrl_delay_ms = 40.0  # Angular velocity controller delay of PX4-Autopilot: 30 ~ 50ms
+    torque_ctrl_delay_ms = 20.0  # Angular velocity controller delay of PX4-Autopilot: 30 ~ 50ms
     # Observation parameters
     odom_delay_ms = 20.0  # VIO delay: 5 ~ 20ms with imu propogation
     rel_pos_obs_delay_ms = 200.0  # Seeker Omni-4P streaming delay: 160ms + YOLO delay: 40ms
@@ -1071,7 +1071,7 @@ class SwarmAJEnv(DirectMARLEnv):
 
             if self.torque_delay_max_lag > 0:
                 rand_lags = torch.randint(
-                    low=math.floor(0.5 * self.torque_delay_max_lag),
+                    low=self.torque_delay_max_lag,
                     high=self.torque_delay_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
