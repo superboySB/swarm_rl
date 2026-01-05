@@ -39,7 +39,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     death_penalty_weight = 0.0
     approaching_goal_reward_weight = 25.0
     success_reward_weight = 10.0
-    mutual_collision_penalty_weight = 160.0
+    mutual_collision_penalty_weight = 50.0
     mutual_collision_avoidance_soft_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_acc_norm_penalty_weight = 1.0
@@ -62,7 +62,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     flight_range_margin = 1.5
     fix_range = False
     flight_altitude = 1.0  # Desired flight altitude
-    collide_dist = 0.5
+    collide_dist = 0.75
     soft_collision_penalty_dist = 1.0
     success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     goal_reset_time_range = (1.0, 2.0)  # Delay for resetting goal after reaching it
@@ -76,7 +76,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     # Params for mission crossover_v1
     crossover_v1_y_span = 0.5
 
-    torque_ctrl_delay_ms = 0.0  # Angular velocity controller delay of PX4-Autopilot: 10 ~ 20ms
+    torque_ctrl_delay_ms = 40.0  # Angular velocity controller delay of PX4-Autopilot: 30 ~ 50ms
     # Observation parameters
     odom_delay_ms = 20.0  # VIO delay: 5 ~ 20ms with imu propogation
     rel_pos_obs_delay_ms = 200.0  # Seeker Omni-4P streaming delay: 160ms + YOLO delay: 40ms
@@ -1071,6 +1071,7 @@ class SwarmAJEnv(DirectMARLEnv):
 
             if self.torque_delay_max_lag > 0:
                 rand_lags = torch.randint(
+                    low=math.floor(0.5 * self.torque_delay_max_lag),
                     high=self.torque_delay_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
@@ -1097,6 +1098,7 @@ class SwarmAJEnv(DirectMARLEnv):
 
             if self.rel_pos_max_lag > 0:
                 rand_lags = torch.randint(
+                    low=math.floor(0.5 * self.rel_pos_max_lag),
                     high=self.rel_pos_max_lag + 1,
                     size=(len(env_ids),),
                     dtype=torch.int,
