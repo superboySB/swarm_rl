@@ -99,7 +99,7 @@ class SwarmAJEnvCfg(DirectMARLEnvCfg):
     num_drones = 5
     episode_length_s = 60.0
     physics_freq = 200
-    control_freq = 50
+    control_freq = 100
     control_decimation = max(1, math.floor(physics_freq / control_freq))
     action_freq = 20
     decimation = max(1, math.floor(physics_freq / action_freq))
