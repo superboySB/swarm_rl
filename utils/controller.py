@@ -10,7 +10,7 @@ class Controller:
         # Params
         self.kPp = torch.tensor([0.0, 0.0, 10.0], dtype=torch.float32, device=gravity.device)
         self.kPv = torch.tensor([0.0, 0.0, 10.0], dtype=torch.float32, device=gravity.device)
-        self.kPR = torch.tensor([13.0, 13.0, 10.0], dtype=torch.float32, device=gravity.device)
+        self.kPR = torch.tensor([13.0, 13.0, 13.0], dtype=torch.float32, device=gravity.device)
         self.kPw = torch.tensor([0.017, 0.01, 0.02], dtype=torch.float32, device=gravity.device)
         self.kIw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)
         self.kDw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)

@@ -979,7 +979,6 @@ class SwarmAJEnv(DirectMARLEnv):
 
         for i, agent in enumerate(self.possible_agents):
             init_state = self.robots[agent].data.default_root_state.clone()
-            mission_2_pos_rel = None
             self.crossover_v1_goal_on_origin_side[agent][env_ids] = False
 
             if len(mission_0_ids) > 0:
